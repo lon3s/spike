@@ -28,6 +28,9 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
 - **Dateisuche** (`find_files`, ohne Bestätigung): Systemindex (`plocate`), frische Suche im Home-Ordner (`fd`) und ein
   eigener Index für `/mnt` (NAS, Laufwerke) in `~/.cache/spike/mnt.db`. spike erneuert ihn täglich im Hintergrund
   (niedrigste Priorität, abschaltbar unter ⚙ → Allgemein, sofort mit `/index`). Suche dauert so ~0,1 s.
+- **Programmieren**: `read_file` mit Zeilennummern und Abschnitten, `edit_file` ersetzt gezielt Stellen (Freigabe zeigt
+  einen farbigen Diff, danach steht die Änderung als Diff-Karte im Chat), `grep` (ripgrep) durchsucht Projekte.
+  Relative Pfade gelten ab dem aktuellen Ordner (`!cd projekt`).
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).

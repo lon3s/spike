@@ -112,17 +112,20 @@ class Agent(QObject):
             return f"Befehle mit „{key.split(':', 1)[1]}“"
         if key.startswith("pc:"):
             return {"pc:open": "Öffnen von Dateien/Programmen"}.get(key, key)
-        return {"write_file": "Dateien schreiben", "python_run": "Python ausführen"}.get(key, key)
+        return {"write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
+                "python_run": "Python ausführen"}.get(key, key)
 
-    def _confirm(self, text) -> bool:
+    def _confirm(self, text, diff=None) -> bool:
         if self.stopped:
             return False
         key = self._allow_key()
         if key and key in self.chat.get("allow", []):
             return True
         short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
-                 {"pc:open": "Öffnen", "write_file": "Dateien schreiben", "python_run": "Python"}.get(key, key[:18]))
-        self.pending = {"text": text, "key": key, "label": self.allow_label(key) if key else "", "short": short}
+                 {"pc:open": "Öffnen", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
+                  "python_run": "Python"}.get(key, key[:18]))
+        self.pending = {"text": text, "key": key, "label": self.allow_label(key) if key else "", "short": short,
+                        "diff": diff or ""}
         self._ev.clear()
         self._tick(force=True)
         self.confirm_request.emit(text)
@@ -316,6 +319,7 @@ class Agent(QObject):
                             raise ValueError
                         self.info.emit(f"🔧 {name} läuft …")
                         self._cur, self._reason = (name, args), ""
+                        self.toolbox.last_diff = ""
                         self.live_tool = {"id": c["id"], "out": ""}
 
                         def on_out(text, lt=self.live_tool):
@@ -331,7 +335,11 @@ class Agent(QObject):
                             result = f"Vom Nutzer abgelehnt. Er schreibt dazu: {self._reason}"
                     except (json.JSONDecodeError, ValueError):
                         result = "Fehler: Argumente sind kein gültiges JSON-Objekt."
-                msgs.append({"role": "tool", "tool_call_id": c["id"], "name": name, "content": result})
+                tmsg = {"role": "tool", "tool_call_id": c["id"], "name": name, "content": result}
+                if self.toolbox.last_diff:
+                    tmsg["_diff"] = self.toolbox.last_diff      # nur Anzeige
+                    self.toolbox.last_diff = ""
+                msgs.append(tmsg)
                 self._tick(force=True)
             self.info.emit("")
 

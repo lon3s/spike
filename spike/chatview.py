@@ -325,6 +325,48 @@ def _short_home(path):
     return "~" + path[len(home):] if path and path.startswith(home) else path
 
 
+def diff_view(diff, max_lines=30):
+    """Farbiger Diff (rot = weg, grün = neu) im Terminal-Stil."""
+    colors = {"+": ("#7ee787", "rgba(46,160,67,0.15)"), "-": ("#ff7b72", "rgba(248,81,73,0.15)"),
+              "@": ("#79c0ff", "transparent")}
+    rows = []
+    lines = diff.splitlines()
+    body = [l for l in lines if not l.startswith(("--- ", "+++ "))]
+    for l in body[:max_lines]:
+        fg, bg = colors.get(l[:1], (TERM["text"], "transparent"))
+        rows.append(f'<div style="color:{fg}; background:{bg}; white-space:pre-wrap;">{html.escape(l) or "&nbsp;"}</div>')
+    if len(body) > max_lines:
+        rows.append(f'<div style="color:{TERM["muted"]}">… {len(body) - max_lines} weitere Zeilen</div>')
+    lb = QLabel("".join(rows) or f'<span style="color:{TERM["muted"]}">(keine Änderung)</span>')
+    lb.setTextFormat(Qt.RichText)
+    lb.setWordWrap(True)
+    lb.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+    lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    lb.setStyleSheet(f"background: {TERM['bg']}; border-radius: 8px; padding: 8px;")
+    return lb
+
+
+def diff_card(path, diff, result, c):
+    """Erledigte Dateiänderung im Chat: Pfad, +/−-Zähler, farbiger Diff."""
+    card = QFrame()
+    card.setObjectName("Term")
+    card.setStyleSheet(f"QFrame#Term {{ background: {TERM['bg']}; border: 1px solid {TERM['border']};"
+                       f"border-radius: 12px; }}")
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(12, 8, 12, 10)
+    lay.setSpacing(4)
+    plus = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+    minus = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+    head = QLabel(f'<span style="color:{TERM["muted"]}">✎</span> <span style="color:{TERM["text"]}">'
+                  f'{html.escape(_short_home(path))}</span>&nbsp;&nbsp;<span style="color:#7ee787">+{plus}</span> '
+                  f'<span style="color:#ff7b72">−{minus}</span>')
+    head.setTextFormat(Qt.RichText)
+    head.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+    lay.addWidget(head)
+    lay.addWidget(diff_view(diff))
+    return card
+
+
 def confirm_card(pending, c, on_choice):
     """Freigabe direkt im Chat: Erlauben / Immer erlauben / Ablehnen (oder unten schreiben, was stattdessen)."""
     card = QFrame()
@@ -338,7 +380,14 @@ def confirm_card(pending, c, on_choice):
     head = QLabel(f"🔐 <b>{html.escape(title or 'Freigabe nötig')}</b>")
     head.setTextFormat(Qt.RichText)
     lay.addWidget(head)
-    if detail:
+    if pending.get("diff"):
+        if detail:
+            path_lb = QLabel(html.escape(detail))
+            path_lb.setWordWrap(True)
+            path_lb.setObjectName("Muted")
+            lay.addWidget(path_lb)
+        lay.addWidget(diff_view(pending["diff"], max_lines=40))
+    elif detail:
         box = QLabel(html.escape(detail))
         box.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         box.setWordWrap(True)
@@ -464,6 +513,7 @@ class ChatView(QScrollArea):
         """Liste von (key, factory) für alle Blöcke."""
         theme = c.get("name", "")
         results = {m.get("tool_call_id"): m.get("content") or "" for m in messages if m["role"] == "tool"}
+        diffs = {m.get("tool_call_id"): m["_diff"] for m in messages if m["role"] == "tool" and m.get("_diff")}
         specs, prev = [], None
         if not messages and live is None:
             return [(("welcome", theme), lambda: welcome(c))]
@@ -510,6 +560,14 @@ class ChatView(QScrollArea):
                         specs.append((("term", tc["id"], res is None, theme),
                                        lambda tc=tc, cmd=cmd, out=out, code=code, cwd=cwd, res=res:
                                        self._make_term(("t", tc["id"]), cmd, cwd, "", out, res is None, code)))
+                        continue
+                    if tc["id"] in diffs:
+                        try:
+                            path = json.loads(tc["function"]["arguments"] or "{}").get("path", "")
+                        except Exception:
+                            path = ""
+                        specs.append((("diff", tc["id"], theme),
+                                      lambda tc=tc, path=path, res=res: diff_card(path, diffs[tc["id"]], res, c)))
                         continue
                     waiting = res is None and bool(pending)
                     specs.append((("t", tc["id"], res is None, waiting, theme),

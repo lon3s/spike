@@ -49,8 +49,18 @@ TOOL_SPECS = {
                      "(kein vim/less). sudo geht: der Nutzer gibt das Passwort selbst in einem Fenster ein. "
                      "„cd“ bleibt für folgende Befehle erhalten.",
                      {"command": {"type": "string"}}, ["command"]),
-    "read_file": _fn("read_file", "Liest eine Textdatei (ab offset).",
-                     {"path": {"type": "string"}, "offset": {"type": "integer"}}, ["path"]),
+    "read_file": _fn("read_file", "Liest eine Textdatei mit Zeilennummern (Format „Nummer│Text“; die Nummern "
+                     "gehören nicht zum Inhalt). Lange Dateien abschnittsweise mit line lesen.",
+                     {"path": {"type": "string"}, "line": {"type": "integer", "description": "erste Zeile, Standard 1"},
+                      "count": {"type": "integer", "description": "Anzahl Zeilen, Standard 400"}}, ["path"]),
+    "edit_file": _fn("edit_file", "Ändert eine Textdatei gezielt: ersetzt old (exakt wie in der Datei, inkl. "
+                     "Einrückung, ohne Zeilennummern) durch new. old muss eindeutig sein, sonst mehr Kontext angeben "
+                     "oder all=true. Für neue Dateien write_file. Nutzer bestätigt mit Diff.",
+                     {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
+                      "all": {"type": "boolean", "description": "alle Vorkommen ersetzen"}}, ["path", "old", "new"]),
+    "grep": _fn("grep", "Durchsucht Dateien nach Text/Regex (ripgrep). Liefert Datei:Zeile: Treffer.",
+                {"pattern": {"type": "string"}, "path": {"type": "string", "description": "Ordner/Datei, Standard: aktueller Ordner"},
+                 "glob": {"type": "string", "description": "z. B. *.py"}}, ["pattern"]),
     "list_dir": _fn("list_dir", "Listet ein Verzeichnis auf.", {"path": {"type": "string"}}, ["path"]),
     "write_file": _fn("write_file", "Schreibt eine Textdatei (Nutzer muss bestätigen).",
                       {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
@@ -85,10 +95,21 @@ TOOL_LABELS = {
     "web_search": "Websuche", "fetch_url": "Seite laden (schnell)", "browser_open": "Browser: öffnen",
     "browser_read": "Browser: lesen", "browser_click": "Browser: klicken", "browser_type": "Browser: tippen",
     "browser_back": "Browser: zurück", "run_shell": "Shell-Befehl ⚠", "read_file": "Datei lesen",
-    "list_dir": "Ordner auflisten", "find_files": "Dateien suchen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
+    "list_dir": "Ordner auflisten", "find_files": "Dateien suchen", "edit_file": "Datei ändern (Diff) ⚠",
+    "grep": "In Dateien suchen (grep)", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
 }
+
+
+def make_diff(old: str, new: str, name: str, context=3, max_lines=400) -> str:
+    """Unified Diff (für Freigabe-Karte und Chat)."""
+    import difflib
+    lines = list(difflib.unified_diff(old.splitlines(), new.splitlines(), f"a/{name}", f"b/{name}",
+                                      n=context, lineterm=""))
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"… {len(lines) - max_lines} weitere Diff-Zeilen"]
+    return "\n".join(lines)
 
 
 def clip_tail(text: str, limit: int) -> str:
@@ -342,6 +363,7 @@ class ToolBox:
         self.browser = browser
         self.cwd = Path.home()        # merkt sich „cd“ zwischen Befehlen (Modell und !-Befehle)
         self.on_output = None         # fn(text) – Live-Ausgabe laufender Befehle
+        self.last_diff = ""           # Diff der letzten Dateiänderung (Anzeige im Chat)
         self._proc = None
 
     # --- Shell mit Live-Ausgabe ---
@@ -460,21 +482,91 @@ class ToolBox:
         rc, out = self.shell(command, on_output=self.on_output)
         return f"exit={rc} · Ordner: {self.cwd}\n" + clip_tail(out, self.limit)
 
-    def t_read_file(self, path, offset=0, confirm=None):
-        return clip(Path(path).expanduser().read_text("utf-8", "replace"), self.limit, offset)
+    def _path(self, path) -> Path:
+        """Relative Pfade gelten ab dem aktuellen Ordner (cd)."""
+        p = Path(str(path)).expanduser()
+        return p if p.is_absolute() else Path(self.cwd) / p
+
+    def t_read_file(self, path, line=1, count=400, offset=None, confirm=None):
+        p = self._path(path)
+        text = p.read_text("utf-8", "replace")
+        if offset:                        # alte Variante (Zeichen-Offset)
+            return clip(text, self.limit, offset)
+        lines = text.split("\n")
+        start = max(1, int(line or 1))
+        count = max(1, min(int(count or 400), 2000))
+        width = len(str(min(len(lines), start + count)))
+        out, used = [], 0
+        for i in range(start, min(len(lines), start + count - 1) + 1):
+            row = f"{i:>{width}}│{lines[i - 1]}"
+            if used + len(row) > self.limit:
+                out.append(f"[… gekürzt – weiter mit line={i}]")
+                break
+            out.append(row)
+            used += len(row) + 1
+        else:
+            if start + count - 1 < len(lines):
+                out.append(f"[… {len(lines) - (start + count - 1)} weitere Zeilen – weiter mit line={start + count}]")
+        return f"{p} ({len(lines)} Zeilen)\n" + "\n".join(out)
+
+    def t_edit_file(self, path, old, new, all=False, confirm=None):
+        p = self._path(path)
+        if not p.exists():
+            return f"Fehler: {p} gibt es nicht (neue Dateien mit write_file)."
+        text = p.read_text("utf-8")
+        n = text.count(old) if old else 0
+        if n == 0:
+            # häufiger Fehler: Zeilennummern oder Einrückung mitkopiert
+            hint = " (Zeilennummern „12│“ gehören nicht dazu)" if re.search(r"^\s*\d+│", old, re.M) else ""
+            return f"Fehler: old kommt in {p.name} nicht vor{hint}. Datei erneut lesen und exakt kopieren."
+        if n > 1 and not all:
+            return f"Fehler: old kommt {n}× vor. Mehr Kontext angeben oder all=true."
+        updated = text.replace(old, new) if all else text.replace(old, new, 1)
+        diff = make_diff(text, updated, str(p))
+        if not confirm(f"Datei ändern?\n\n{p}", diff=diff):
+            return "Vom Nutzer abgelehnt."
+        p.write_text(updated, "utf-8")
+        self.last_diff = diff
+        first = text[:text.index(old)].count("\n") + 1
+        return f"OK: {n if all else 1} Stelle(n) in {p} geändert (ab Zeile {first})."
+
+    def t_grep(self, pattern, path="", glob="", confirm=None):
+        root = self._path(path or ".")
+        if shutil.which("rg"):
+            args = ["rg", "-n", "--no-heading", "--color", "never", "-S", "--max-columns", "300",
+                    "--max-count", "50", "-e", pattern]
+            if glob:
+                args += ["-g", glob]
+        else:
+            args = ["grep", "-rnI", "-E", pattern] + ([f"--include={glob}"] if glob else [])
+        try:
+            p = subprocess.run(args + [str(root)], capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return "Abgebrochen nach 60 s – Ordner eingrenzen."
+        lines = p.stdout.splitlines()
+        if not lines:
+            return f"Keine Treffer für „{pattern}“ in {root}." + (f" {p.stderr.strip()[:200]}" if p.stderr else "")
+        home = str(root) + "/"
+        lines = [l[len(home):] if l.startswith(home) else l for l in lines]
+        head = f"{len(lines)} Treffer in {root}" + (" (max. 50 pro Datei)" if len(lines) >= 50 else "") + ":"
+        return clip("\n".join([head] + lines[:300]), self.limit)
 
     def t_list_dir(self, path, confirm=None):
-        p = Path(path).expanduser()
+        p = self._path(path)
         items = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
         lines = [f"{'📁' if i.is_dir() else '  '} {i.name}" for i in items[:300]]
         return clip("\n".join(lines) or "(leer)", self.limit)
 
     def t_write_file(self, path, content, confirm=None):
-        p = Path(path).expanduser()
-        if not confirm(f"Datei schreiben?\n\n{p}\n({len(content)} Zeichen{', ÜBERSCHREIBT' if p.exists() else ''})"):
+        p = self._path(path)
+        old = p.read_text("utf-8", "replace") if p.exists() else ""
+        diff = make_diff(old, content, str(p))
+        what = "Datei überschreiben?" if p.exists() else "Neue Datei anlegen?"
+        if not confirm(f"{what}\n\n{p} ({len(content)} Zeichen)", diff=diff):
             return "Vom Nutzer abgelehnt."
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, "utf-8")
+        self.last_diff = diff
         return f"Geschrieben: {p} ({len(content)} Zeichen)"
 
     # --- Dateisuche ---
