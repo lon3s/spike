@@ -72,6 +72,8 @@ DEFAULT_CONFIG = {
         "old_tool_result_chars": 300,
         "max_steps": 15,
         "browser_headless": True,
+        "theme": "system",
+        "compact": False,
         "default_n_ctx": 8192,
     },
 }

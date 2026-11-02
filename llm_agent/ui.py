@@ -14,53 +14,49 @@ from PySide6.QtWidgets import (
 from . import config as C
 from .agent import Agent
 from .client import get_n_ctx, list_models
-from .tools import TOOL_LABELS, TOOL_SPECS, Browser, ToolBox, short_args
-
-
-# ---------- Darstellung ----------
-
-def _quote(text: str) -> str:
-    return "> " + text.replace("\n", "\n> ")
-
-
-def render(messages, live) -> str:
-    parts, prev = [], None
-    for m in messages:
-        r = m["role"]
-        if r == "user":
-            parts.append(f"### 🧑 Du\n\n{m.get('content', '')}")
-        elif r == "assistant":
-            s = "### 🤖 Assistent\n\n" if prev in (None, "user") else ""
-            if m.get("_reasoning"):
-                rs = m["_reasoning"].strip()
-                s += _quote("💭 " + (rs[:300] + " …" if len(rs) > 300 else rs)) + "\n\n"
-            s += m.get("content") or ""
-            for tc in m.get("tool_calls") or []:
-                f = tc["function"]
-                s += f"\n\n> 🔧 **{f['name']}** {short_args(f['arguments']).replace('`', chr(39))}"
-            parts.append(s)
-        elif r == "tool":
-            c = (m.get("content") or "").strip()
-            first = c.splitlines()[0][:160] if c else "(leer)"
-            parts.append(_quote(f"↳ {first}  *({len(c)} Zeichen)*"))
-        prev = r
-    if live is not None:
-        s = "### 🤖 Assistent\n\n" if prev in (None, "user") else ""
-        if live.get("reasoning"):
-            s += _quote("💭 " + live["reasoning"][-600:]) + "\n\n"
-        s += (live.get("content") or "") + " ▍"
-        parts.append(s)
-    return "\n\n".join(parts)
+from .theme import THEMES, palette, qss, render_html, welcome_html
+from .tools import TOOL_LABELS, TOOL_SPECS, Browser, ToolBox
 
 
 class InputBox(QPlainTextEdit):
+    """Wächst mit dem Text (bis max. Höhe). Enter = senden, Shift+Enter = Zeilenumbruch."""
     submitted = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("Input")
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.document().contentsChanged.connect(self._fit)
+        self._fit()
+
+    def _fit(self):
+        lines = max(1, int(self.document().size().height()))
+        line_h = self.fontMetrics().lineSpacing()
+        want = lines * line_h + 18
+        self.setFixedHeight(min(220, want))
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if want > 220 else Qt.ScrollBarAlwaysOff)
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & Qt.ShiftModifier):
             self.submitted.emit()
             return
         super().keyPressEvent(e)
+
+
+class ChatView(QTextBrowser):
+    """Chatverlauf als mittige Spalte mit begrenzter Breite."""
+    MAX_W = 860
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("Chat")
+        self.setOpenExternalLinks(True)
+        self.document().setDocumentMargin(18)
+
+    def resizeEvent(self, e):
+        side = max(0, (self.width() - self.MAX_W) // 2)
+        self.setViewportMargins(side, 0, side, 0)
+        super().resizeEvent(e)
 
 
 class Bridge(QObject):
@@ -235,6 +231,9 @@ class SettingsDialog(QDialog):
         self.sp_steps = QSpinBox(); self.sp_steps.setRange(1, 100); self.sp_steps.setValue(s["max_steps"])
         self.sp_ctx = QSpinBox(); self.sp_ctx.setRange(512, 2_000_000); self.sp_ctx.setValue(s["default_n_ctx"])
         self.cb_head = QCheckBox("Browser unsichtbar (headless)"); self.cb_head.setChecked(s["browser_headless"])
+        self.cb_theme = QComboBox(); self.cb_theme.addItems(["system", "dark", "light"])
+        self.cb_theme.setCurrentText(s.get("theme", "system"))
+        f.addRow("Design", self.cb_theme)
         f.addRow("Max. Zeichen pro Werkzeug-Ausgabe", self.sp_out)
         f.addRow("Letzte N Werkzeug-Ausgaben voll behalten", self.sp_keep)
         f.addRow("Ältere Werkzeug-Ausgaben kürzen auf (Zeichen)", self.sp_old)
@@ -279,111 +278,210 @@ class SettingsDialog(QDialog):
         s = self.cfg["settings"]
         s.update(tool_output_max_chars=self.sp_out.value(), keep_full_tool_results=self.sp_keep.value(),
                  old_tool_result_chars=self.sp_old.value(), max_steps=self.sp_steps.value(),
-                 default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked())
+                 default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked(),
+                 theme=self.cb_theme.currentText())
         return self.cfg
 
 
 # ---------- Hauptfenster ----------
 
+def _icon_btn(text, tip, slot):
+    b = QPushButton(text)
+    b.setObjectName("Icon")
+    b.setToolTip(tip)
+    b.setCursor(Qt.PointingHandCursor)
+    b.clicked.connect(slot)
+    return b
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LLM Agent")
-        self.resize(1200, 800)
+        self.resize(1200, 820)
         self.cfg = C.load_config()
         self.browser = Browser()
         self.toolbox = ToolBox(self.cfg["settings"], self.browser)
         self.agent = None
         self.n_ctx = {}          # endpoint-name -> n_ctx
         self.chat = None
+        self.colors = THEMES["dark"]
         self.bridge = Bridge()
         self.bridge.models_loaded.connect(self._models_loaded)
 
-        # Seitenleiste
-        self.chat_list = QListWidget()
-        self.chat_list.currentItemChanged.connect(self._chat_selected)
-        btn_new = QPushButton("+ Neuer Chat")
+        # --- Seitenleiste ---
+        self.side = QWidget()
+        self.side.setObjectName("Side")
+        self.side.setFixedWidth(250)
+        title = QLabel("✦  LLM Agent")
+        title.setStyleSheet("font-size: 13pt; font-weight: 700; padding: 4px 2px;")
+        btn_new = QPushButton("+  Neuer Chat")
+        btn_new.setObjectName("Primary")
+        btn_new.setCursor(Qt.PointingHandCursor)
         btn_new.clicked.connect(self.new_chat)
+        self.chat_list = QListWidget()
+        self.chat_list.setObjectName("Chats")
+        self.chat_list.currentItemChanged.connect(self._chat_selected)
         btn_del = QPushButton("Chat löschen")
+        btn_del.setObjectName("Danger")
         btn_del.clicked.connect(self.delete_chat)
-        side = QWidget()
-        sl = QVBoxLayout(side)
+        btn_set = QPushButton("⚙  Einstellungen")
+        btn_set.clicked.connect(self.open_settings)
+        sl = QVBoxLayout(self.side)
+        sl.setContentsMargins(12, 14, 12, 12)
+        sl.setSpacing(8)
+        sl.addWidget(title)
         sl.addWidget(btn_new)
-        sl.addWidget(self.chat_list)
+        hist = QLabel("VERLAUF")
+        hist.setObjectName("Muted")
+        hist.setStyleSheet("font-size: 8.5pt; font-weight: 600; padding: 8px 4px 0 4px;")
+        sl.addWidget(hist)
+        sl.addWidget(self.chat_list, 1)
         sl.addWidget(btn_del)
+        sl.addWidget(btn_set)
 
-        # Kopfzeile
+        # --- Kopfzeile ---
+        self.topbar = QWidget()
+        self.topbar.setObjectName("TopBar")
         self.cb_ep = QComboBox()
         self.cb_model = QComboBox()
         self.cb_model.setEditable(True)
-        self.cb_model.setMinimumWidth(240)
+        self.cb_model.setMinimumWidth(220)
+        self.cb_model.setMaximumWidth(380)
         self.cb_profile = QComboBox()
-        btn_ref = QPushButton("⟳")
-        btn_ref.setToolTip("Modelle neu laden")
-        btn_ref.clicked.connect(self.refresh_models)
-        btn_set = QPushButton("⚙ Einstellungen")
-        btn_set.clicked.connect(self.open_settings)
-        top = QHBoxLayout()
-        for lbl, w in (("Server:", self.cb_ep), ("Modell:", self.cb_model), ("Profil:", self.cb_profile)):
-            top.addWidget(QLabel(lbl))
-            top.addWidget(w)
-        top.addWidget(btn_ref)
-        top.addStretch(1)
-        top.addWidget(btn_set)
+        for cb, tip in ((self.cb_ep, "Server / API"), (self.cb_model, "Modell"), (self.cb_profile, "Profil")):
+            cb.setToolTip(tip)
+        top = QHBoxLayout(self.topbar)
+        top.setContentsMargins(10, 8, 10, 8)
+        top.setSpacing(8)
+        top.addWidget(_icon_btn("☰", "Seitenleiste ein/aus (Strg+B)", self.toggle_side))
+        top.addWidget(self.cb_ep)
+        top.addWidget(self.cb_model, 1)
+        top.addWidget(self.cb_profile)
+        top.addWidget(_icon_btn("⟳", "Modelle neu laden", self.refresh_models))
+        top.addStretch(0)
+        top.addWidget(_icon_btn("◐", "Hell/Dunkel umschalten", self.toggle_theme))
+        top.addWidget(_icon_btn("⤡", "Kompakt-Modus (Strg+K)", self.toggle_compact))
         self.cb_ep.currentTextChanged.connect(self._ep_changed)
         self.cb_model.currentTextChanged.connect(self._sync_chat_settings)
         self.cb_profile.currentTextChanged.connect(self._sync_chat_settings)
 
-        # Chat
-        self.view = QTextBrowser()
-        self.view.setOpenExternalLinks(True)
+        # --- Chat + Eingabe ---
+        self.view = ChatView()
         self.input = InputBox()
-        self.input.setPlaceholderText("Nachricht … (Enter = senden, Shift+Enter = neue Zeile)")
-        self.input.setFixedHeight(100)
+        self.input.setPlaceholderText("Nachricht schreiben …")
+        self.input.setToolTip("Enter = senden · Shift+Enter = neue Zeile · Esc = Stopp")
         self.input.submitted.connect(self.send)
-        self.btn_send = QPushButton("Senden")
+        self.btn_send = QPushButton("➤")
+        self.btn_send.setObjectName("Primary")
+        self.btn_send.setToolTip("Senden (Enter)")
+        self.btn_send.setFixedSize(40, 36)
+        self.btn_send.setCursor(Qt.PointingHandCursor)
         self.btn_send.clicked.connect(self.send)
-        self.btn_stop = QPushButton("Stopp")
+        self.btn_stop = QPushButton("■")
+        self.btn_stop.setToolTip("Stopp")
+        self.btn_stop.setFixedSize(40, 36)
         self.btn_stop.clicked.connect(self.stop)
-        self.btn_stop.setEnabled(False)
-        btns = QVBoxLayout()
-        btns.addWidget(self.btn_send)
-        btns.addWidget(self.btn_stop)
-        inrow = QHBoxLayout()
-        inrow.addWidget(self.input, 1)
-        inrow.addLayout(btns)
+        self.btn_stop.hide()
+        self.btn_compact = _icon_btn("⤢", "Kompakt-Modus beenden (Strg+K)", self.toggle_compact)
+        self.btn_compact.hide()
+
+        composer = QWidget()
+        composer.setObjectName("Composer")
+        composer.setMaximumWidth(ChatView.MAX_W)
+        cl = QHBoxLayout(composer)
+        cl.setContentsMargins(10, 6, 6, 6)
+        cl.addWidget(self.btn_compact, 0, Qt.AlignBottom)
+        cl.addWidget(self.input, 1)
+        cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
+        cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
+        crow = QHBoxLayout()
+        crow.setContentsMargins(16, 4, 16, 12)
+        crow.addStretch(1)
+        crow.addWidget(composer, 100)
+        crow.addStretch(1)
 
         main = QWidget()
         ml = QVBoxLayout(main)
-        ml.addLayout(top)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+        ml.addWidget(self.topbar)
         ml.addWidget(self.view, 1)
-        ml.addLayout(inrow)
+        ml.addLayout(crow)
 
-        split = QSplitter()
-        split.addWidget(side)
-        split.addWidget(main)
-        split.setSizes([230, 970])
-        self.setCentralWidget(split)
+        root = QWidget()
+        rl = QHBoxLayout(root)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addWidget(self.side)
+        rl.addWidget(main, 1)
+        self.setCentralWidget(root)
 
-        # Statusleiste
+        # --- Statusleiste ---
         self.status = QLabel()
         self.ctx_bar = QProgressBar()
-        self.ctx_bar.setMaximumWidth(260)
-        self.ctx_bar.setFormat("Kontext: %p%")
+        self.ctx_bar.setMaximumWidth(200)
+        self.ctx_bar.setFixedHeight(14)
+        self.ctx_bar.setFormat("Kontext %p%")
         self.statusBar().addWidget(self.status, 1)
         self.statusBar().addPermanentWidget(self.ctx_bar)
+        self.statusBar().setSizeGripEnabled(False)
 
-        act = QAction(self)
-        act.setShortcut(QKeySequence("Ctrl+N"))
-        act.triggered.connect(self.new_chat)
-        self.addAction(act)
+        for keys, slot in (("Ctrl+N", self.new_chat), ("Ctrl+K", self.toggle_compact),
+                           ("Ctrl+B", self.toggle_side), ("Escape", self.stop)):
+            act = QAction(self)
+            act.setShortcut(QKeySequence(keys))
+            act.triggered.connect(slot)
+            self.addAction(act)
 
+        QApplication.styleHints().colorSchemeChanged.connect(lambda *_: self.apply_theme())
+        self.apply_theme()
         self._fill_combos()
         self._load_chat_list()
         if self.chat_list.count() == 0:
             self.new_chat()
         else:
             self.chat_list.setCurrentRow(0)
+        self.apply_compact()
+
+    # --- Design / Kompakt ---
+    def apply_theme(self):
+        mode = self.cfg["settings"].get("theme", "system")
+        if mode == "system":
+            dark = QApplication.styleHints().colorScheme() != Qt.ColorScheme.Light
+            mode = "dark" if dark else "light"
+        self.colors = THEMES[mode]
+        app = QApplication.instance()
+        app.setPalette(palette(self.colors))
+        app.setStyleSheet(qss(self.colors))
+        if self.chat is not None:
+            self.redraw()
+
+    def toggle_theme(self):
+        self.cfg["settings"]["theme"] = "light" if self.colors is THEMES["dark"] else "dark"
+        C.save_config(self.cfg)
+        self.apply_theme()
+
+    def apply_compact(self):
+        compact = bool(self.cfg["settings"].get("compact"))
+        self.side.setVisible(not compact and self.cfg["settings"].get("show_side", True))
+        self.topbar.setVisible(not compact)
+        self.statusBar().setVisible(not compact)
+        self.btn_compact.setVisible(compact)
+        self.redraw()
+
+    def toggle_compact(self):
+        self.cfg["settings"]["compact"] = not self.cfg["settings"].get("compact")
+        C.save_config(self.cfg)
+        self.apply_compact()
+        self.input.setFocus()
+
+    def toggle_side(self):
+        if self.cfg["settings"].get("compact"):
+            return
+        self.cfg["settings"]["show_side"] = not self.cfg["settings"].get("show_side", True)
+        C.save_config(self.cfg)
+        self.side.setVisible(self.cfg["settings"]["show_side"])
 
     # --- Kombos ---
     def _fill_combos(self):
@@ -432,18 +530,28 @@ class MainWindow(QMainWindow):
         want = (self.chat or {}).get("model") or (self.endpoint() or {}).get("model") or ""
         self.cb_model.blockSignals(True)
         self.cb_model.clear()
-        self.cb_model.addItems(models)
-        if want:
-            self.cb_model.setCurrentText(want)
+        for mid in models:   # lange Pfade kurz anzeigen, volle ID als Daten
+            self.cb_model.addItem(mid.rsplit("/", 1)[-1], mid)
+        idx = self.cb_model.findData(want)
+        if idx >= 0:
+            self.cb_model.setCurrentIndex(idx)
+        elif want:
+            self.cb_model.setEditText(want)
         self.cb_model.blockSignals(False)
         self._sync_chat_settings()
         ctx = n_ctx or self.cfg["settings"]["default_n_ctx"]
-        self.status.setText(f"✅ {name}: {len(models)} Modell(e), Kontext {ctx}")
+        self.status.setText(f"●  {name} verbunden · {len(models)} Modell(e) · Kontext {ctx:,}".replace(",", "."))
+
+    def model_id(self):
+        i = self.cb_model.currentIndex()
+        data = self.cb_model.itemData(i) if i >= 0 else None
+        text = self.cb_model.currentText()
+        return data if data and self.cb_model.itemText(i) == text else text
 
     def _sync_chat_settings(self, *_):
         if self.chat is not None:
             self.chat["endpoint"] = self.cb_ep.currentText()
-            self.chat["model"] = self.cb_model.currentText()
+            self.chat["model"] = self.model_id()
             self.chat["profile"] = self.cb_profile.currentText()
 
     # --- Chats ---
@@ -459,7 +567,10 @@ class MainWindow(QMainWindow):
     def new_chat(self):
         if self.agent:
             return
-        self.chat = C.new_chat(self.cb_ep.currentText(), self.cb_model.currentText(), self.cb_profile.currentText())
+        if self.chat is not None and not self.chat["messages"]:
+            self.input.setFocus()   # leerer Chat existiert schon
+            return
+        self.chat = C.new_chat(self.cb_ep.currentText(), self.model_id(), self.cb_profile.currentText())
         it = QListWidgetItem(self.chat["title"])
         it.setData(Qt.UserRole, self.chat["id"])
         self.chat_list.blockSignals(True)
@@ -478,11 +589,12 @@ class MainWindow(QMainWindow):
             self.chat_list.setCurrentItem(prev)
             self.chat_list.blockSignals(False)
             return
-        cid = cur.data(Qt.UserRole)
         try:
-            self.chat = C.load_chat(cid)
+            self.chat = C.load_chat(cur.data(Qt.UserRole))
         except FileNotFoundError:
             return   # neuer, noch ungespeicherter Chat
+        if prev and prev.text() == "Neuer Chat" and self.chat_list.row(prev) >= 0:
+            self.chat_list.takeItem(self.chat_list.row(prev))   # leere Chats aufräumen
         for cb, key in ((self.cb_ep, "endpoint"), (self.cb_profile, "profile")):
             if self.chat.get(key) and cb.findText(self.chat[key]) >= 0:
                 cb.blockSignals(True)
@@ -499,6 +611,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Löschen", f"Chat „{it.text()}“ löschen?") != QMessageBox.Yes:
             return
         C.delete_chat(it.data(Qt.UserRole))
+        self.chat = None
         self.chat_list.takeItem(self.chat_list.row(it))
         if self.chat_list.count() == 0:
             self.new_chat()
@@ -506,7 +619,7 @@ class MainWindow(QMainWindow):
     # --- Senden ---
     def send(self):
         text = self.input.toPlainText().strip()
-        if not text or self.agent:
+        if not text or self.agent or self.chat is None:
             return
         ep = self.endpoint()
         if not ep:
@@ -521,23 +634,28 @@ class MainWindow(QMainWindow):
             if it:
                 it.setText(self.chat["title"])
         n_ctx = self.n_ctx.get(ep["name"]) or self.cfg["settings"]["default_n_ctx"]
-        self.agent = Agent(self.chat, ep, self.cb_model.currentText(), self.profile(),
+        self.agent = Agent(self.chat, ep, self.model_id(), self.profile(),
                            self.cfg["settings"], self.toolbox, n_ctx)
         self.agent.changed.connect(self.redraw)
         self.agent.stats.connect(self._stats)
         self.agent.error.connect(lambda e: QMessageBox.warning(self, "Fehler", e))
-        self.agent.info.connect(self.status.setText)
+        self.agent.info.connect(self._info)
         self.agent.confirm_request.connect(self._confirm)
         self.agent.finished.connect(self._finished)
-        self.btn_send.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-        self.redraw()
+        self.btn_send.hide()
+        self.btn_stop.show()
+        self.redraw(force_bottom=True)
         self.agent.start()
 
     def stop(self):
         if self.agent:
             self.agent.stop()
             self.status.setText("Abbruch …")
+
+    def _info(self, text):
+        self.status.setText(text)
+        if self.cfg["settings"].get("compact"):
+            self.input.setPlaceholderText(text or "Nachricht schreiben …")
 
     def _confirm(self, text):
         ok = QMessageBox.question(self, "Bestätigen", text) == QMessageBox.Yes
@@ -553,16 +671,21 @@ class MainWindow(QMainWindow):
     def _finished(self):
         C.save_chat(self.chat)
         self.agent = None
-        self.btn_send.setEnabled(True)
-        self.btn_stop.setEnabled(False)
+        self.btn_stop.hide()
+        self.btn_send.show()
+        self.input.setPlaceholderText("Nachricht schreiben …")
         self.redraw()
         self.input.setFocus()
 
-    def redraw(self):
+    def redraw(self, force_bottom=False):
         sb = self.view.verticalScrollBar()
-        at_bottom = sb.value() >= sb.maximum() - 30
+        at_bottom = force_bottom or sb.value() >= sb.maximum() - 40
+        msgs = self.chat["messages"] if self.chat else []
         live = self.agent.live if self.agent else None
-        self.view.setMarkdown(render(self.chat["messages"] if self.chat else [], live))
+        if not msgs and live is None:
+            self.view.setHtml(welcome_html(self.colors))
+            return
+        self.view.setHtml(render_html(msgs, live, self.colors, bool(self.cfg["settings"].get("compact"))))
         if at_bottom:
             sb.setValue(sb.maximum())
 
@@ -575,6 +698,7 @@ class MainWindow(QMainWindow):
             self.cfg["settings"].update(new["settings"])   # gleiches dict, ToolBox sieht Änderungen
             C.save_config(self.cfg)
             self._fill_combos()
+            self.apply_theme()
             self.refresh_models()
 
     def closeEvent(self, e):
@@ -591,6 +715,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("llm-agent")
     app.setDesktopFileName("llm-agent")
+    app.setStyle("Fusion")
     w = MainWindow()
     w.show()
     sys.exit(app.exec())
