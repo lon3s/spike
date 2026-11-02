@@ -446,6 +446,10 @@ class MainWindow(QMainWindow):
         self.btn_pin.setChecked(bool(self.cfg["settings"].get("popup_pinned")))
         self.btn_pin.setVisible(popup)
         cl.addWidget(self.btn_pin, 0, Qt.AlignBottom)
+        # alle Knöpfe in der Eingabeleiste gleich hoch wie das einzeilige Eingabefeld,
+        # sonst wird die Leiste höher und der Senden-Knopf sitzt nicht mittig
+        for b in (self.btn_compact, self.btn_pin):
+            b.setFixedSize(36, 36)
         cl.addWidget(self.input, 1)
         cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
         cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
