@@ -192,3 +192,8 @@ Im Popup und im Kompakt-Modus zeigt eine Zeile unter dem Eingabefeld die Kontext
 - Enter sendet, Shift+Enter macht eine neue Zeile, Strg+N startet einen neuen Chat, Esc stoppt.
 - **Strg+K**: Kompakt-Modus (nur Verlauf und Eingabe), **Strg+B**: Seitenleiste ein/aus, ◐: hell/dunkel.
 - „Stopp“ bricht die laufende Antwort oder Werkzeugkette ab.
+
+## Lizenz
+
+MIT – siehe [LICENSE](LICENSE). Optionale Zusatzprogramme (z. B. Piper, VoxCPM, faster-whisper, Playwright)
+werden nur als eigene Programme aufgerufen und haben ihre eigenen Lizenzen.
