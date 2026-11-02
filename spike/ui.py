@@ -1,5 +1,6 @@
 """Qt-Oberfläche."""
 import copy
+import os
 from pathlib import Path
 import re
 import threading
@@ -153,6 +154,113 @@ def _line(form, key, label, changed, fields, echo=None):
     form.addRow(label, w)
     fields[key] = (w, w.text, lambda v, w=w: w.setText(v or ""))
     return w
+
+
+class PiperDownloadDialog(QDialog):
+    """Piper-Stimmen aus dem offiziellen Katalog auswählen und herunterladen."""
+    progress = Signal(int)
+    loaded = Signal(object, str)
+    finished_dl = Signal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Piper-Stimmen")
+        self.resize(640, 520)
+        self.installed = ""
+        self.catalog = []
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Suchen (Name, Sprache) …")
+        self.search.textChanged.connect(self._fill)
+        self.only_de = QCheckBox("nur Deutsch")
+        self.only_de.setChecked(True)
+        self.only_de.toggled.connect(self._fill)
+        top.addWidget(self.search, 1)
+        top.addWidget(self.only_de)
+        lay.addLayout(top)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _: self._download())
+        lay.addWidget(self.list, 1)
+        self.info = QLabel("Lade Katalog …")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+        row = QHBoxLayout()
+        self.bar = QProgressBar()
+        self.bar.hide()
+        row.addWidget(self.bar, 1)
+        self.b_dl = QPushButton("Herunterladen")
+        self.b_dl.setObjectName("Primary")
+        self.b_dl.clicked.connect(self._download)
+        row.addWidget(self.b_dl)
+        close = QPushButton("Schließen")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        lay.addLayout(row)
+        self.progress.connect(lambda p: (self.bar.show(), self.bar.setValue(p)))
+        self.loaded.connect(self._loaded)
+        self.finished_dl.connect(self._done)
+
+        def job():
+            try:
+                self.loaded.emit(speech.piper_catalog(), "")
+            except Exception as e:
+                self.loaded.emit([], str(e))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _loaded(self, cat, err):
+        if err:
+            self.info.setText(f"⚠ Katalog nicht erreichbar: {err}")
+            return
+        self.catalog = sorted(cat, key=lambda v: (not v["lang"].startswith("de"), v["lang"], v["name"],
+                                                  ["x_low", "low", "medium", "high"].index(v["quality"])
+                                                  if v["quality"] in ("x_low", "low", "medium", "high") else 9))
+        self.info.setText("Doppelklick oder „Herunterladen“. Qualität: x_low/low = klein und schnell, "
+                          "medium = guter Kompromiss, high = am natürlichsten.")
+        self._fill()
+
+    def _fill(self):
+        have = {n for n, _ in speech.piper_voices()}
+        q = self.search.text().strip().lower()
+        self.list.clear()
+        for v in self.catalog:
+            if self.only_de.isChecked() and not v["lang"].startswith("de"):
+                continue
+            text = f"{v['lang']} · {v['name']} · {v['quality']} · {v['size'] / 1e6:.0f} MB"
+            if v["speakers"] > 1:
+                text += f" · {v['speakers']} Sprecher"
+            if q and q not in (text + v["lang_name"]).lower():
+                continue
+            if v["key"] in have:
+                text = "✓ " + text + "  (installiert)"
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, v)
+            self.list.addItem(it)
+
+    def _download(self):
+        it = self.list.currentItem()
+        if not it:
+            return
+        v = it.data(Qt.UserRole)
+        self.b_dl.setEnabled(False)
+        self.info.setText(f"Lade {v['key']} ({v['size'] / 1e6:.0f} MB) …")
+
+        def job():
+            try:
+                self.finished_dl.emit(speech.download_piper_voice(v, self.progress.emit), "")
+            except Exception as e:
+                self.finished_dl.emit("", str(e))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _done(self, path, err):
+        self.b_dl.setEnabled(True)
+        self.bar.hide()
+        if err:
+            self.info.setText(f"⚠ Download fehlgeschlagen: {err}")
+            return
+        self.installed = path
+        self.info.setText(f"✅ Installiert: {Path(path).name} – ist jetzt ausgewählt.")
+        self._fill()
 
 
 class SettingsDialog(QDialog):
@@ -362,15 +470,22 @@ class SettingsDialog(QDialog):
         eng.setCurrentIndex(max(0, eng.findData(s.get("tts_engine", "auto"))))
         f.addRow("Stimme verwenden", eng)
         self.sp_fields["tts_engine"] = eng.currentData
-        pm = speech.piper_model(s)
-        line("piper_model", "Piper-Stimme (.onnx)",
-             f"leer = automatisch ({pm or 'keine gefunden in ' + str(speech.PIPER_DIR)})")
-        ok = speech.piper_ready(s)
-        st = QLabel(("✅ Piper bereit: " + Path(pm).name) if ok else
-                    "Piper fehlt: siehe README → „Piper installieren“" if not speech.piper_bin(s) else
-                    f"Piper-Programm da, aber keine Stimme in {speech.PIPER_DIR}")
-        st.setObjectName("Muted")
-        f.addRow("", st)
+        # Piper-Stimme: Auswahl der installierten, Probehören, weitere herunterladen
+        self.piper_cb = QComboBox()
+        row = QHBoxLayout()
+        row.addWidget(self.piper_cb, 1)
+        b_try = QPushButton("▶ Probehören")
+        b_try.clicked.connect(self._piper_try)
+        row.addWidget(b_try)
+        b_dl = QPushButton("Stimmen herunterladen …")
+        b_dl.clicked.connect(self._piper_download)
+        row.addWidget(b_dl)
+        f.addRow("Piper-Stimme", row)
+        self.sp_fields["piper_model"] = lambda: self.piper_cb.currentData() or ""
+        self.piper_status = QLabel()
+        self.piper_status.setObjectName("Muted")
+        f.addRow("", self.piper_status)
+        self._piper_fill(s.get("piper_model", ""))
         ta = QCheckBox("Antworten automatisch vorlesen")
         ta.setChecked(bool(s.get("tts_auto")))
         f.addRow(ta)
@@ -381,6 +496,35 @@ class SettingsDialog(QDialog):
         hint.setObjectName("Muted")
         f.addRow(hint)
         return w
+
+    def _piper_fill(self, want=""):
+        self.piper_cb.clear()
+        voices = speech.piper_voices()
+        for name, path in voices:
+            self.piper_cb.addItem(name, path)
+        idx = self.piper_cb.findData(os.path.expanduser(want)) if want else -1
+        self.piper_cb.setCurrentIndex(idx if idx >= 0 else 0)
+        if not speech.piper_bin(self.cfg["settings"]):
+            self.piper_status.setText("Piper-Programm fehlt: ~/spike/.venv/bin/pip install piper-tts")
+        elif not voices:
+            self.piper_status.setText("Noch keine Stimme – „Stimmen herunterladen …“")
+        else:
+            self.piper_status.setText(f"{len(voices)} Stimme(n) installiert in {speech.PIPER_DIR}")
+
+    def _piper_try(self):
+        path = self.piper_cb.currentData()
+        if not path:
+            return
+        st = {**self.cfg["settings"], "piper_model": path}
+        if not hasattr(self, "_try_speaker"):
+            self._try_speaker = speech.Speaker(st, on_state=lambda t: None)
+        self._try_speaker.settings = st
+        self._try_speaker.speak("Hallo! So klinge ich. Ich lese dir die Antworten von spike vor.", engine="piper")
+
+    def _piper_download(self):
+        dlg = PiperDownloadDialog(self)
+        dlg.exec()
+        self._piper_fill(dlg.installed or self.piper_cb.currentData() or "")
 
     def _mcp_tab(self, s):
         w = QWidget()
@@ -1776,6 +1920,7 @@ class MainWindow(QMainWindow):
         ("/screenshot", ("/bildschirm",), "[Frage]", "Bildschirmfoto anhängen (mit Frage: gleich senden)"),
         ("/aufgaben", ("/tasks", "/erinnerungen"), "", "Geplante Erinnerungen und Aufgaben anzeigen"),
         ("/vorlesen", ("/speak", "/sag"), "[Text]", "Letzte Antwort (oder Text) vorlesen"),
+        ("/stimme", ("/voice",), "<Name>", "Piper-Stimme wechseln"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
@@ -1795,6 +1940,8 @@ class MainWindow(QMainWindow):
             return [p["name"] for p in self.cfg["profiles"]]
         if cmd == "/server":
             return [e["name"] for e in self.cfg["endpoints"]]
+        if cmd == "/stimme":
+            return [n for n, _ in speech.piper_voices()]
         if cmd == "/denken":
             return ["an", "aus", "standard"]
         if cmd == "/modell":
@@ -1919,6 +2066,19 @@ class MainWindow(QMainWindow):
             self._sync_chat_settings()
             self._estimate()
             self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/stimme":
+            voices = speech.piper_voices()
+            hit = next((p for n, p in voices if n.lower() == arg.lower()), None) or \
+                next((p for n, p in voices if arg and arg.lower() in n.lower()), None)
+            if not hit:
+                self._info(f"Piper-Stimme „{arg}“ nicht gefunden. Installiert: " +
+                           (", ".join(n for n, _ in voices) or "keine") + " – mehr unter ⚙ → Sprache")
+                return True
+            self.cfg["settings"]["piper_model"] = hit
+            C.save_config(self.cfg)
+            self._info(f"🔊 Piper-Stimme: {Path(hit).stem}")
+            self.speaker.settings = self.cfg["settings"]
+            self.speaker.speak("So klinge ich jetzt.", engine="piper")
         elif name == "/vorlesen":
             last = next((m.get("content") for m in reversed(self.chat["messages"] if self.chat else [])
                          if m["role"] == "assistant" and m.get("content")), "")

@@ -199,6 +199,60 @@ def piper_model(settings) -> str:
     return str((de or found)[0]) if (de or found) else ""
 
 
+PIPER_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+
+
+def piper_voices() -> list[tuple[str, str]]:
+    """Installierte Piper-Stimmen: [(name, pfad)]."""
+    if not PIPER_DIR.is_dir():
+        return []
+    return [(f.stem, str(f)) for f in sorted(PIPER_DIR.glob("*.onnx")) if f.with_suffix(".onnx.json").exists()]
+
+
+def piper_catalog(max_age_h=24) -> list[dict]:
+    """Alle Piper-Stimmen aus dem offiziellen Katalog (voices.json, einen Tag zwischengespeichert)."""
+    PIPER_DIR.mkdir(parents=True, exist_ok=True)
+    cache = PIPER_DIR / "voices.json"
+    if not cache.exists() or time.time() - cache.stat().st_mtime > max_age_h * 3600:
+        with urllib.request.urlopen(PIPER_BASE + "voices.json", timeout=30) as r:
+            cache.write_bytes(r.read())
+    data = json.loads(cache.read_text("utf-8"))
+    out = []
+    for key, v in data.items():
+        files = v.get("files") or {}
+        onnx = next((p for p in files if p.endswith(".onnx")), None)
+        if not onnx:
+            continue
+        lang = v.get("language") or {}
+        out.append({"key": key, "name": v.get("name", key), "quality": v.get("quality", ""),
+                    "lang": lang.get("code", ""), "lang_name": lang.get("name_native") or lang.get("name_english", ""),
+                    "speakers": v.get("num_speakers", 1),
+                    "size": sum(f.get("size_bytes", 0) for f in files.values()),
+                    "files": [p for p in files if p.endswith((".onnx", ".onnx.json"))]})
+    return out
+
+
+def download_piper_voice(entry, progress=None) -> str:
+    """Lädt .onnx und .onnx.json einer Katalog-Stimme nach ~/.local/share/spike/piper. Gibt den Pfad zurück."""
+    PIPER_DIR.mkdir(parents=True, exist_ok=True)
+    total = max(1, entry.get("size", 1))
+    done = 0
+    target = ""
+    for rel in sorted(entry["files"], key=lambda p: p.endswith(".onnx")):     # .json zuerst (klein)
+        dst = PIPER_DIR / Path(rel).name
+        part = dst.with_suffix(dst.suffix + ".part")
+        with urllib.request.urlopen(PIPER_BASE + rel, timeout=60) as r, open(part, "wb") as f:
+            while chunk := r.read(1 << 16):
+                f.write(chunk)
+                done += len(chunk)
+                if progress:
+                    progress(min(100, done * 100 // total))
+        part.replace(dst)
+        if dst.suffix == ".onnx":
+            target = str(dst)
+    return target
+
+
 def piper_ready(settings) -> bool:
     return bool(piper_bin(settings) and piper_model(settings) and Path(piper_model(settings)).exists())
 
@@ -281,12 +335,13 @@ class Speaker:
         if p and p.poll() is None:
             p.kill()
 
-    def speak(self, text):
+    def speak(self, text, engine=None):
+        """engine: None = nach Einstellung, oder 'piper'/'voxcpm' erzwingen (z. B. Probehören)."""
         self.stop()
         if self._thread:
             self._thread.join(timeout=2)
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, args=(text, self._stop), daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(text, self._stop, engine), daemon=True)
         self._thread.start()
 
     def _server_up(self, url):
@@ -372,10 +427,10 @@ class Speaker:
             f.write_bytes(r.read())
         return f
 
-    def _run(self, text, stop):
+    def _run(self, text, stop, engine=None):
         url = self.settings.get("tts_url") or "http://127.0.0.1:8000/tts"
         try:
-            self.engine = self._choose_engine(url)
+            self.engine = engine or self._choose_engine(url)
             if self.engine == "voxcpm" and not self._ensure_server(url, stop):
                 return
             parts = chunks(speakable(text))

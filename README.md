@@ -52,6 +52,9 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Automatische Wahl: GPU frei (≥ 6 GB) oder VoxCPM läuft schon auf der GPU → VoxCPM; GPU voll → **Piper**
   (schnell auch auf der CPU, ~0,3× Echtzeit). VoxCPM auf der CPU wäre ~5× Echtzeit.
 
+Weitere Piper-Stimmen: ⚙ → Sprache → „Stimmen herunterladen …“ (offizieller Katalog, deutsche zuerst),
+„▶ Probehören“, im Chat `/stimme <name>`.
+
 ### Piper installieren (schnelle Stimme ohne GPU)
 
 ```bash
@@ -156,6 +159,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/screenshot [Frage]` | Bildschirmfoto anhängen |
 | `/aufgaben` | geplante Erinnerungen/Aufgaben |
 | `/vorlesen [Text]` | letzte Antwort vorlesen |
+| `/stimme <Name>` | Piper-Stimme wechseln |
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/stop` | Antwort abbrechen |
