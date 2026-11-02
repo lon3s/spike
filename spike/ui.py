@@ -297,7 +297,7 @@ def _icon_btn(text, tip, slot):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LLM Agent")
+        self.setWindowTitle("Spike")
         self.resize(1200, 820)
         self.cfg = C.load_config()
         self.browser = Browser()
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         self.side = QWidget()
         self.side.setObjectName("Side")
         self.side.setFixedWidth(250)
-        title = QLabel("✦  LLM Agent")
+        title = QLabel("✦  Spike")
         title.setStyleSheet("font-size: 13pt; font-weight: 700; padding: 4px 2px;")
         btn_new = QPushButton("+  Neuer Chat")
         btn_new.setObjectName("Primary")
@@ -713,8 +713,8 @@ class MainWindow(QMainWindow):
 def main():
     import sys
     app = QApplication(sys.argv)
-    app.setApplicationName("llm-agent")
-    app.setDesktopFileName("llm-agent")
+    app.setApplicationName("spike")
+    app.setDesktopFileName("spike")
     app.setStyle("Fusion")
     w = MainWindow()
     w.show()

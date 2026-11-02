@@ -6,8 +6,8 @@ import time
 import uuid
 from pathlib import Path
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "llm-agent"
-DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "llm-agent"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "spike"
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "spike"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 CHATS_DIR = DATA_DIR / "chats"
 

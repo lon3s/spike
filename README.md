@@ -1,4 +1,4 @@
-# LLM Agent
+# Spike
 
 Leichtgewichtige Desktop-App (Python + Qt) zum Chatten mit mehreren LLM-Servern über die
 **OpenAI-kompatible API**, also llama.cpp `llama-server`, Ollama, LM Studio, vLLM, OpenAI, OpenRouter und andere.
@@ -18,18 +18,18 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   - Das „Denken“ (`reasoning_content`) wird nur angezeigt und nicht zurückgeschickt.
   - Wird der Kontext voll, fallen die ältesten Runden weg.
   - Die Kontextgröße kommt vom Server (`/props`), die Auslastung zeigt die Statusleiste.
-- Chats werden lokal gespeichert (`~/.local/share/llm-agent/chats`).
+- Chats werden lokal gespeichert (`~/.local/share/spike/chats`).
 
 ## Installation (auf jedem PC)
 
 ```bash
-git clone <repo-url> ~/projects/llm-agent
-cd ~/projects/llm-agent
+git clone <repo-url> ~/projects/spike
+cd ~/projects/spike
 ./install.sh            # oder ./install.sh --no-browser
-llm-agent
+spike
 ```
 
-Die Konfiguration liegt in `~/.config/llm-agent/config.json`. Diese Datei einfach auf die anderen PCs kopieren,
+Die Konfiguration liegt in `~/.config/spike/config.json`. Diese Datei einfach auf die anderen PCs kopieren,
 dann sind dort dieselben Endpunkte und Profile eingerichtet.
 
 ## llama.cpp-Server im Netzwerk erreichbar machen

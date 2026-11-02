@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installiert LLM Agent für den aktuellen Benutzer (Arch/CachyOS, Debian/Ubuntu, Fedora …).
+# Installiert Spike für den aktuellen Benutzer (Arch/CachyOS, Debian/Ubuntu, Fedora …).
 # Aufruf:  ./install.sh            (mit Browser-Werkzeug)
 #          ./install.sh --no-browser
 set -euo pipefail
@@ -30,22 +30,22 @@ fi
 
 echo "→ Starter + Menüeintrag"
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
-cat > "$HOME/.local/bin/llm-agent" <<EOF
+cat > "$HOME/.local/bin/spike" <<EOF
 #!/usr/bin/env bash
-cd "$APP_DIR" && exec "$APP_DIR/.venv/bin/python" -m llm_agent "\$@"
+cd "$APP_DIR" && exec "$APP_DIR/.venv/bin/python" -m spike "\$@"
 EOF
-chmod +x "$HOME/.local/bin/llm-agent"
-cat > "$HOME/.local/share/applications/llm-agent.desktop" <<EOF
+chmod +x "$HOME/.local/bin/spike"
+cat > "$HOME/.local/share/applications/spike.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=LLM Agent
+Name=Spike
 Comment=Chat mit lokalen und entfernten LLMs (OpenAI-API) mit Werkzeugen
-Exec=$HOME/.local/bin/llm-agent
+Exec=$HOME/.local/bin/spike
 Icon=utilities-terminal
 Terminal=false
 Categories=Utility;Development;
 EOF
 
 echo
-echo "✅ Fertig. Starten über das Anwendungsmenü (\"LLM Agent\") oder im Terminal: llm-agent"
-echo "   Konfiguration: ~/.config/llm-agent/config.json  (kann zwischen PCs kopiert werden)"
+echo "✅ Fertig. Starten über das Anwendungsmenü (\"Spike\") oder im Terminal: spike"
+echo "   Konfiguration: ~/.config/spike/config.json  (kann zwischen PCs kopiert werden)"
