@@ -93,6 +93,28 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 
 ## Bedienung
 
+### Befehle
+
+`/` im Eingabefeld zeigt eine Liste. ↑/↓ wählen, Tab ergänzt, Enter führt aus. Bei `/profil`, `/modell` und
+`/server` werden nach dem Leerzeichen die passenden Namen vorgeschlagen.
+
+| Befehl | Wirkung |
+|---|---|
+| `/new` (`/neu`, `/clear`) | neuer Chat |
+| `/compact [Hinweis]` (`/compress`) | Verlauf jetzt zusammenfassen, macht Kontext frei |
+| `/kontext` | Kontext-Belegung anzeigen |
+| `/profil <Name>`, `/modell <Name>`, `/server <Name>` | wechseln (auch im Popup, wo die Kopfzeile fehlt) |
+| `/merk <Text>` | ins Gedächtnis schreiben |
+| `/stop` | Antwort abbrechen |
+| `/gross` | Chat im großen Fenster öffnen |
+| `/einstellungen` | Einstellungen |
+| `/quit` (`/beenden`) | spike beenden |
+| `/hilfe` | alle Befehle |
+
+Im Popup und im Kompakt-Modus zeigt eine Zeile unter dem Eingabefeld die Kontext-Belegung, die Geschwindigkeit
+(live während der Antwort) sowie Modell und Profil.
+
+
 - Enter sendet, Shift+Enter macht eine neue Zeile, Strg+N startet einen neuen Chat, Esc stoppt.
 - **Strg+K**: Kompakt-Modus (nur Verlauf und Eingabe), **Strg+B**: Seitenleiste ein/aus, ◐: hell/dunkel.
 - „Stopp“ bricht die laufende Antwort oder Werkzeugkette ab.

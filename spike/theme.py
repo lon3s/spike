@@ -104,6 +104,11 @@ def qss(c) -> str:
     QCheckBox::indicator {{ width: 16px; height: 16px; }}
     QToolTip {{ background: {c['panel2']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 4px; }}
     QLabel#Muted {{ color: {c['muted']}; }}
+    QLabel#MetaText {{ color: {c['muted']}; font-size: 8.5pt; }}
+    QListWidget#CmdList {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 12px;
+                          padding: 4px; outline: none; }}
+    QListWidget#CmdList::item {{ padding: 4px 8px; border-radius: 7px; color: {c['text']}; }}
+    QListWidget#CmdList::item:selected {{ background: {c['sel']}; color: {c['text']}; }}
     """
 
 

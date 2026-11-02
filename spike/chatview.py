@@ -155,6 +155,17 @@ def reasoning_label(text, tail=False):
     return _label(f"💭 <i>{html.escape(t)}</i>", obj="Reasoning")
 
 
+def summary_divider(summary, c):
+    lb = QLabel("📦  Alles darüber ist zusammengefasst – das Modell sieht nur noch die Zusammenfassung")
+    lb.setObjectName("Muted")
+    lb.setAlignment(Qt.AlignCenter)
+    lb.setWordWrap(True)
+    lb.setStyleSheet(f"font-size: 8.5pt; padding: 6px; border-top: 1px dashed {c['border']};"
+                     f"border-bottom: 1px dashed {c['border']};")
+    lb.setToolTip(summary[:3000])
+    return lb
+
+
 def role_label(text):
     lb = QLabel(text)
     lb.setObjectName("RoleLabel")
@@ -221,7 +232,7 @@ class ChatView(QScrollArea):
         self._stick = True
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 
-    def _specs(self, messages, live, c, compact):
+    def _specs(self, messages, live, c, compact, summary_at=0, summary=""):
         """Liste von (key, factory) für alle Blöcke."""
         theme = c.get("name", "")
         results = {m.get("tool_call_id"): m.get("content") or "" for m in messages if m["role"] == "tool"}
@@ -229,6 +240,9 @@ class ChatView(QScrollArea):
         if not messages and live is None:
             return [(("welcome", theme), lambda: welcome(c))]
         for i, m in enumerate(messages):
+            if summary_at and i == summary_at:
+                specs.append((("sum", i, hash(summary), theme), lambda: summary_divider(summary, c)))
+                prev = None
             r = m["role"]
             if r == "user":
                 t = m.get("content") or ""
@@ -263,8 +277,8 @@ class ChatView(QScrollArea):
                 specs.append((("dots", theme), lambda: _label(f'<span style="color:{c["muted"]}">● ● ●</span>')))
         return specs
 
-    def render(self, messages, live, c, compact=False):
-        specs = self._specs(messages, live, c, compact)
+    def render(self, messages, live, c, compact=False, summary_at=0, summary=""):
+        specs = self._specs(messages, live, c, compact, summary_at, summary)
         n = 0
         while n < len(specs) and n < len(self.blocks) and specs[n][0] == self.blocks[n][0]:
             n += 1

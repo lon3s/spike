@@ -1,5 +1,6 @@
 """Qt-Oberfläche."""
 import copy
+import re
 import threading
 import time
 
@@ -40,7 +41,11 @@ class InputBox(QPlainTextEdit):
         self.setFixedHeight(min(220, want))
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if want > 220 else Qt.ScrollBarAlwaysOff)
 
+    key_hook = None     # fn(key) -> True, wenn die Taste verbraucht wurde (Befehlsliste)
+
     def keyPressEvent(self, e):
+        if self.key_hook and not (e.modifiers() & Qt.ShiftModifier) and self.key_hook(e.key()):
+            return
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & Qt.ShiftModifier):
             self.submitted.emit()
             return
@@ -729,6 +734,7 @@ class MainWindow(QMainWindow):
         self.cb_ep.currentTextChanged.connect(self._ep_changed)
         self.cb_model.currentTextChanged.connect(self._sync_chat_settings)
         self.cb_profile.currentTextChanged.connect(self._sync_chat_settings)
+        self.cb_profile.currentTextChanged.connect(lambda *_: self._estimate())
 
         # --- Chat + Eingabe ---
         self.view = ChatView()
@@ -769,11 +775,50 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.input, 1)
         cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
         cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
-        crow = QHBoxLayout()
-        crow.setContentsMargins(22, 6, 22, 16)
-        crow.addStretch(1)
-        crow.addWidget(composer, 100)
-        crow.addStretch(1)
+        # Vorschlagsliste für /Befehle (über dem Eingabefeld)
+        self.cmd_list = QListWidget()
+        self.cmd_list.setObjectName("CmdList")
+        self.cmd_list.setMaximumWidth(ChatView.MAX_W)
+        self.cmd_list.setFocusPolicy(Qt.NoFocus)
+        self.cmd_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.cmd_list.setTextElideMode(Qt.ElideRight)
+        self.cmd_list.itemClicked.connect(lambda it: self._cmd_complete(it, run=True))
+        self.cmd_list.hide()
+        self.input.key_hook = self._cmd_key
+        self.input.textChanged.connect(self._cmd_suggest)
+        # Infozeile unter dem Eingabefeld (Kontext, Tempo, Modell) – vor allem fürs Popup
+        self.meta = QWidget()
+        self.meta.setObjectName("Meta")
+        self.meta.setMaximumWidth(ChatView.MAX_W)
+        ml_ = QHBoxLayout(self.meta)
+        ml_.setContentsMargins(14, 0, 14, 0)
+        ml_.setSpacing(8)
+        self.meta_bar = QProgressBar()
+        self.meta_bar.setObjectName("MetaBar")
+        self.meta_bar.setTextVisible(False)
+        self.meta_bar.setFixedSize(70, 5)
+        self.meta_ctx = QLabel("Kontext –")
+        self.meta_speed = QLabel("")
+        self.meta_model = QLabel("")
+        for lb in (self.meta_ctx, self.meta_speed, self.meta_model):
+            lb.setObjectName("MetaText")
+        self.meta_model.setTextInteractionFlags(Qt.NoTextInteraction)
+        ml_.addWidget(self.meta_bar, 0, Qt.AlignVCenter)
+        ml_.addWidget(self.meta_ctx)
+        ml_.addWidget(self.meta_speed)
+        ml_.addStretch(1)
+        ml_.addWidget(self.meta_model)
+        self._last_tps = 0.0
+        self._ctx_used = 0
+        crow = QVBoxLayout()
+        crow.setContentsMargins(22, 6, 22, 8)
+        crow.setSpacing(5)
+        for w_ in (self.cmd_list, composer, self.meta):
+            h = QHBoxLayout()
+            h.addStretch(1)
+            h.addWidget(w_, 100)
+            h.addStretch(1)
+            crow.addLayout(h)
 
         main = QWidget()
         ml = QVBoxLayout(main)
@@ -819,6 +864,7 @@ class MainWindow(QMainWindow):
         self._load_chat_list()
         if self.chat_list.count() == 0:
             self.new_chat()
+            self.refresh_models()     # sonst fragt beim allerersten Start niemand den Server
         else:
             self.chat_list.setCurrentRow(0)
         self.apply_compact()
@@ -854,6 +900,7 @@ class MainWindow(QMainWindow):
         self.side.setVisible(not compact and self.cfg["settings"].get("show_side", True))
         self.topbar.setVisible(not compact)
         self.statusBar().setVisible(not compact)
+        self.meta.setVisible(compact)
         self.btn_compact.setVisible(compact)
         self.redraw()
 
@@ -868,7 +915,9 @@ class MainWindow(QMainWindow):
         self.input.setFocus()
 
     def escape(self):
-        if self.agent:
+        if self.cmd_list.isVisible():
+            self.cmd_list.hide()
+        elif self.agent:
             self.stop()
         elif self.popup:
             self.hide()
@@ -936,6 +985,7 @@ class MainWindow(QMainWindow):
             self.cb_model.setEditText(want)
         self.cb_model.blockSignals(False)
         self._sync_chat_settings()
+        self._estimate()
         ctx = n_ctx or self.cfg["settings"]["default_n_ctx"]
         self.status.setText(f"●  {name} verbunden · {len(models)} Modell(e) · Kontext {ctx:,}".replace(",", "."))
 
@@ -990,6 +1040,7 @@ class MainWindow(QMainWindow):
         self.chat_list.blockSignals(False)
         self.ctx_bar.setValue(0)
         self.redraw()
+        self._estimate()
         self.input.setFocus()
 
     def _chat_selected(self, cur, prev):
@@ -1014,6 +1065,7 @@ class MainWindow(QMainWindow):
         self.ctx_bar.setValue(0)
         self.refresh_models()
         self.redraw()
+        self._estimate()
 
     def delete_chat(self):
         it = self.chat_list.currentItem()
@@ -1028,8 +1080,26 @@ class MainWindow(QMainWindow):
             self.new_chat()
 
     # --- Senden ---
+    def _new_agent(self):
+        ep = self.endpoint()
+        n_ctx = self.n_ctx.get(ep["name"]) or self.cfg["settings"]["default_n_ctx"]
+        a = Agent(self.chat, ep, self.model_id(), self.profile(), self.cfg["settings"], self.toolbox, n_ctx)
+        a.usage.connect(self._usage)
+        return a
+
+    def _estimate(self):
+        """Kontext-Belegung des aktuellen Chats schätzen (ohne Anfrage an den Server)."""
+        if self.agent or self.chat is None or not self.endpoint():
+            return
+        try:
+            self._new_agent().estimate()
+        except Exception as e:
+            print("Schätzung fehlgeschlagen:", e)
+
     def send(self):
         text = self.input.toPlainText().strip()
+        if text.startswith("/") and self.run_command(text):
+            return
         if not text or self.agent or self.chat is None:
             return
         ep = self.endpoint()
@@ -1044,9 +1114,8 @@ class MainWindow(QMainWindow):
             it = self.chat_list.currentItem()
             if it:
                 it.setText(self.chat["title"])
-        n_ctx = self.n_ctx.get(ep["name"]) or self.cfg["settings"]["default_n_ctx"]
-        self.agent = Agent(self.chat, ep, self.model_id(), self.profile(),
-                           self.cfg["settings"], self.toolbox, n_ctx)
+        self.agent = self._new_agent()
+        self.agent.speed.connect(self._speed)
         self.agent.changed.connect(self.redraw)
         self.agent.stats.connect(self._stats)
         self.agent.error.connect(lambda e: QMessageBox.warning(self, "Fehler", e))
@@ -1086,14 +1155,249 @@ class MainWindow(QMainWindow):
         self.btn_send.show()
         self.input.setPlaceholderText("Nachricht schreiben …")
         self.redraw()
+        self._update_meta()
         self.input.setFocus()
+
+    # --- Infozeile: Kontext und Tempo ---
+    def _usage(self, used, n_ctx, tps):
+        self._ctx_used, self._ctx_max = used, n_ctx
+        if tps > 0:
+            self._last_tps = tps
+        if n_ctx:
+            self.ctx_bar.setValue(min(100, int(used * 100 / n_ctx)))
+            self.ctx_bar.setToolTip(f"{used:,} / {n_ctx:,} Tokens".replace(",", "."))
+        self._update_meta()
+
+    def _speed(self, tps):
+        self.meta_speed.setText(f"⚡ {tps:.1f} tok/s")
+
+    def _update_meta(self):
+        fmt = lambda n: f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+        used, n = self._ctx_used, getattr(self, "_ctx_max", 0)
+        pct = min(100, int(used * 100 / n)) if n else 0
+        self.meta_bar.setValue(pct)
+        lim = int(self.cfg["settings"].get("compact_at_percent", 70)) * 0.75   # Anteil am Gesamtkontext, grob
+        col = self.colors.get("danger", "#e5484d") if pct >= 90 else ("#e5a100" if pct >= lim else self.colors["accent"])
+        self.meta_bar.setStyleSheet(f"QProgressBar#MetaBar {{ background: {self.colors['border']}; border: none;"
+                                    f"border-radius: 2px; }} QProgressBar#MetaBar::chunk {{ background: {col};"
+                                    f"border-radius: 2px; }}")
+        summ = " · 📦 zusammengefasst" if self.chat and self.chat.get("summary") else ""
+        self.meta_ctx.setText(f"Kontext {pct} % · {fmt(used)} / {fmt(n)}{summ}" if n else "Kontext –")
+        tip = f"Belegt: {used:,} von {n:,} Tokens".replace(",", ".")
+        if summ:
+            tip += f"\nÄlterer Verlauf ist zusammengefasst (bis Nachricht {self.chat.get('summary_upto')})."
+        tip += "\n/compact fasst den Verlauf jetzt zusammen."
+        self.meta_ctx.setToolTip(tip)
+        if not self.agent:
+            self.meta_speed.setText(f"⚡ {self._last_tps:.1f} tok/s" if self._last_tps else "")
+        model = (self.model_id() or "").rsplit("/", 1)[-1].removesuffix(".gguf")
+        if len(model) > 26:
+            model = model[:25] + "…"
+        self.meta_model.setText(" · ".join(x for x in (model, self.cb_profile.currentText()) if x))
+        self.meta_model.setToolTip(f"Server: {self.cb_ep.currentText()}\nModell: {self.model_id()}\n"
+                                   f"Profil: {self.cb_profile.currentText()}\n(/modell, /profil, /server zum Wechseln)")
+
+    # --- /Befehle ---
+    COMMANDS = [
+        # (name, aliasse, argument, beschreibung)
+        ("/new", ("/neu", "/clear"), "", "Neuer Chat"),
+        ("/compact", ("/compress", "/komprimieren"), "[Hinweis]", "Verlauf jetzt zusammenfassen – macht Kontext frei"),
+        ("/kontext", ("/context",), "", "Kontext-Belegung anzeigen"),
+        ("/profil", ("/profile",), "<Name>", "Profil wechseln"),
+        ("/modell", ("/model",), "<Name>", "Modell wechseln"),
+        ("/server", ("/endpoint",), "<Name>", "Server wechseln"),
+        ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
+        ("/stop", (), "", "Laufende Antwort abbrechen"),
+        ("/gross", ("/big", "/fenster"), "", "Chat im großen Fenster öffnen"),
+        ("/einstellungen", ("/settings",), "", "Einstellungen öffnen"),
+        ("/quit", ("/beenden", "/exit"), "", "spike beenden"),
+        ("/hilfe", ("/help",), "", "Alle Befehle zeigen"),
+    ]
+
+    def _cmd_lookup(self, word):
+        word = word.lower()
+        return next((c for c in self.COMMANDS if word == c[0] or word in c[1]), None)
+
+    def _cmd_choices(self, cmd):
+        if cmd == "/profil":
+            return [p["name"] for p in self.cfg["profiles"]]
+        if cmd == "/server":
+            return [e["name"] for e in self.cfg["endpoints"]]
+        if cmd == "/modell":
+            return [self.cb_model.itemText(i) for i in range(self.cb_model.count())]
+        return []
+
+    def _cmd_suggest(self):
+        text = self.input.toPlainText()
+        self.cmd_list.clear()
+        if not text.startswith("/") or "\n" in text or self.agent:
+            self.cmd_list.hide()
+            return
+        word, _, arg = text.partition(" ")
+        if _:    # Befehl fertig getippt → Argumente vorschlagen (Profile, Modelle, Server)
+            c = self._cmd_lookup(word)
+            for ch in (self._cmd_choices(c[0]) if c else []):
+                if arg.strip().lower() in ch.lower():
+                    it = QListWidgetItem(f"{c[0]} {ch}")
+                    it.setData(Qt.UserRole, f"{c[0]} {ch}")
+                    self.cmd_list.addItem(it)
+        else:
+            w = word.lower()
+            for name, aliases, argh, desc in self.COMMANDS:
+                if any(n.startswith(w) for n in (name,) + aliases):
+                    it = QListWidgetItem(f"{name} {argh}".strip() + f"   –  {desc}")
+                    it.setData(Qt.UserRole, name)
+                    it.setData(Qt.UserRole + 1, bool(argh) and not argh.startswith("["))
+                    self.cmd_list.addItem(it)
+        if self.cmd_list.count():
+            self.cmd_list.setCurrentRow(0)
+            row_h = self.cmd_list.sizeHintForRow(0) or 26
+            self.cmd_list.setFixedHeight(min(8, self.cmd_list.count()) * row_h + 10)
+            self.cmd_list.show()
+        else:
+            self.cmd_list.hide()
+
+    def _cmd_complete(self, it, run=False):
+        value = it.data(Qt.UserRole)
+        needs_arg = bool(it.data(Qt.UserRole + 1))
+        if needs_arg or not run:
+            self.input.setPlainText(value + (" " if needs_arg or " " not in value else ""))
+            cur = self.input.textCursor()
+            cur.movePosition(cur.MoveOperation.End)
+            self.input.setTextCursor(cur)
+            self.input.setFocus()
+            return
+        self.input.setPlainText(value)
+        self.send()
+
+    def _cmd_key(self, key):
+        if not self.cmd_list.isVisible():
+            return False
+        row = self.cmd_list.currentRow()
+        if key in (Qt.Key_Down, Qt.Key_Up):
+            n = self.cmd_list.count()
+            self.cmd_list.setCurrentRow((row + (1 if key == Qt.Key_Down else -1)) % n)
+            return True
+        if key == Qt.Key_Tab:
+            it = self.cmd_list.currentItem()
+            if it:
+                self._cmd_complete(it)
+            return True
+        if key == Qt.Key_Escape:
+            self.cmd_list.hide()
+            return True
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            it = self.cmd_list.currentItem()
+            typed = self.input.toPlainText().strip()
+            # Nur übernehmen, wenn das Getippte noch unvollständig ist – sonst normal ausführen
+            if it and typed != it.data(Qt.UserRole) and not self._cmd_ready(typed):
+                self._cmd_complete(it, run=True)
+                return True
+        return False
+
+    def _cmd_ready(self, typed):
+        word, _, arg = typed.partition(" ")
+        c = self._cmd_lookup(word)
+        if not c:
+            return False
+        if c[2] and not c[2].startswith("[") and not arg.strip():
+            return False
+        if c[0] in ("/profil", "/server", "/modell") and arg.strip():
+            return arg.strip() in self._cmd_choices(c[0])
+        return True
+
+    def run_command(self, text) -> bool:
+        """Führt /befehl aus. Gibt False zurück, wenn es kein Befehl ist (dann normal senden)."""
+        word, _, arg = text.strip().partition(" ")
+        arg = arg.strip()
+        c = self._cmd_lookup(word)
+        if not c:
+            if re.fullmatch(r"/[\w-]+", word):
+                self._info(f"Unbekannter Befehl {word} – /hilfe zeigt alle")
+                return True
+            return False      # z. B. ein Pfad wie /etc/fstab → als Nachricht senden
+        name = c[0]
+        self.cmd_list.hide()
+        if name not in ("/stop", "/quit") and self.agent:
+            self._info("Bitte warten, bis die Antwort fertig ist (oder /stop)")
+            return True
+        self.input.clear()
+        if name == "/new":
+            self.new_chat()
+        elif name == "/compact":
+            self.compact_now(arg)
+        elif name == "/kontext":
+            self._estimate()
+            n = getattr(self, "_ctx_max", 0)
+            pct = int(self._ctx_used * 100 / n) if n else 0
+            summ = (f" · zusammengefasst bis Nachricht {self.chat['summary_upto']}"
+                    if self.chat and self.chat.get("summary") else "")
+            self._info(f"Kontext: {self._ctx_used:,} / {n:,} Tokens ({pct} %){summ}".replace(",", "."))
+        elif name in ("/profil", "/server", "/modell"):
+            cb = {"/profil": self.cb_profile, "/server": self.cb_ep, "/modell": self.cb_model}[name]
+            items = [cb.itemText(i) for i in range(cb.count())]
+            hit = next((t for t in items if t.lower() == arg.lower()), None) or \
+                next((t for t in items if arg and arg.lower() in t.lower()), None)
+            if not hit:
+                self._info(f"Nicht gefunden: „{arg}“. Möglich: {', '.join(items[:8])}")
+                return True
+            cb.setCurrentIndex(items.index(hit))
+            self._sync_chat_settings()
+            self._estimate()
+            self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/merk":
+            if not arg:
+                self._info("Was soll ich mir merken? /merk <Text>")
+                return True
+            m = memory.add(arg)
+            self._info(f"🧠 Gemerkt: {m['text'][:60]}")
+        elif name == "/stop":
+            self.stop()
+        elif name == "/gross":
+            if self.popup and self.ctrl:
+                self.ctrl.show_main(self.chat["id"] if self.chat else None)
+            elif self.is_compact():
+                self.toggle_compact()
+        elif name == "/einstellungen":
+            self.open_settings()
+        elif name == "/quit":
+            if self.ctrl:
+                self.ctrl.quit()
+            else:
+                QApplication.quit()
+        elif name == "/hilfe":
+            self.input.setPlainText("/")
+            cur = self.input.textCursor()
+            cur.movePosition(cur.MoveOperation.End)
+            self.input.setTextCursor(cur)
+        return True
+
+    def compact_now(self, hint=""):
+        if self.agent or self.chat is None or not self.endpoint():
+            return
+        if not self.chat["messages"]:
+            self._info("Der Chat ist noch leer.")
+            return
+        self.agent = self._new_agent()
+        self.agent.changed.connect(self.redraw)
+        self.agent.error.connect(lambda e: QMessageBox.warning(self, "Fehler", e))
+        self.agent.info.connect(self._info)
+        self.agent.finished.connect(self._compact_done)
+        self.btn_send.hide()
+        self.btn_stop.show()
+        self.agent.start_compact(hint)
+
+    def _compact_done(self):
+        self._finished()
+        self._estimate()
 
     def redraw(self, force_bottom=False):
         msgs = self.chat["messages"] if self.chat else []
         live = self.agent.live if self.agent else None
         if force_bottom:
             self.view.scroll_bottom()
-        self.view.render(msgs, live, self.colors, self.is_compact())
+        self.view.render(msgs, live, self.colors, self.is_compact(),
+                         int((self.chat or {}).get("summary_upto") or 0), (self.chat or {}).get("summary", ""))
 
     # --- Einstellungen ---
     def open_settings(self):

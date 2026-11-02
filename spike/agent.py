@@ -20,6 +20,8 @@ MEMORY_HOWTO = (
 class Agent(QObject):
     changed = Signal()
     stats = Signal(str, int, int)        # text, genutzte tokens, n_ctx
+    usage = Signal(int, int, float)      # genutzte tokens, n_ctx, tok/s (-1 = Schätzung, noch keine Messung)
+    speed = Signal(float)                # tok/s live während des Streamens
     error = Signal(str)
     info = Signal(str)
     confirm_request = Signal(str)
@@ -38,6 +40,33 @@ class Agent(QObject):
     # --- Steuerung ---
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
+
+    def start_compact(self, hint=""):
+        """Nur den bisherigen Verlauf zusammenfassen (Befehl /compact), ohne neue Anfrage."""
+        def job():
+            try:
+                max_tokens = int(self.profile.get("max_tokens") or 0)
+                if not self._compact(max_tokens, force=True, hint=hint):
+                    self.info.emit("Nichts zum Zusammenfassen – der Verlauf ist noch kurz.")
+                self.estimate()
+            except Exception as e:
+                self.error.emit(f"{type(e).__name__}: {e}")
+            finally:
+                self.changed.emit()
+                self.finished.emit()
+        threading.Thread(target=job, daemon=True).start()
+
+    def estimate(self) -> int:
+        """Geschätzte Kontext-Belegung der nächsten Anfrage (inkl. Werkzeug-Beschreibungen)."""
+        s = self.settings
+        payload, _ = build_messages(
+            self._system_prompt(), self.chat["messages"], 0, 0,
+            int(s.get("keep_full_tool_results", 2)), int(s.get("old_tool_result_chars", 300)),
+            self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)))
+        tools = specs_for(self.profile.get("tools", []))
+        est = estimate_tokens(payload) + (estimate_tokens([{"t": json.dumps(tools)}]) if tools else 0)
+        self.usage.emit(est, self.n_ctx or 0, -1.0)
+        return est
 
     def stop(self):
         self.stopped = True
@@ -69,11 +98,13 @@ class Agent(QObject):
         if not s.get("memory_enabled", True):
             return system
         # Auszug einmal pro Chat bilden und dann gleich lassen (Prompt-Cache des Servers bleibt gültig)
-        if "memory" not in self.chat:
-            first = next((m.get("content") or "" for m in self.chat["messages"] if m["role"] == "user"), "")
-            text, n, total = memory.snapshot(first, int(s.get("memory_prompt_chars", 1500)))
-            self.chat["memory"] = {"text": text, "n": n, "total": total}
-        mem = self.chat["memory"]
+        mem = self.chat.get("memory")
+        if mem is None:
+            first = next((m.get("content") or "" for m in self.chat["messages"] if m["role"] == "user"), None)
+            text, n, total = memory.snapshot(first or "", int(s.get("memory_prompt_chars", 1500)))
+            mem = {"text": text, "n": n, "total": total}
+            if first is not None:     # erst festschreiben, wenn die erste Nachricht da ist
+                self.chat["memory"] = mem
         has_tools = any(t in expand(self.profile.get("tools", [])) for t in MEMORY_TOOLS)
         block = ""
         if mem.get("text"):
@@ -84,20 +115,24 @@ class Agent(QObject):
         return (system + "\n\n" + block).strip() if block else system
 
     # --- Verlauf zusammenfassen, wenn der Kontext voll wird ---
-    def _compact(self, max_tokens) -> bool:
+    def _compact(self, max_tokens, force=False, hint="") -> bool:
         msgs, s = self.chat["messages"], self.settings
         start = int(self.chat.get("summary_upto", 0))
         keep = int(budget(self.n_ctx, max_tokens) * int(s.get("compact_keep_percent", 30)) / 100)
+        if force:   # manuell: höchstens die letzte Runde wörtlich behalten
+            keep = min(keep, max(1, estimate_tokens(msgs[start:]) // 4))
         cut = pick_cut(msgs, start, keep)
         if cut is None:
             return False
         last_user = next((m.get("content") or "" for m in reversed(msgs[:cut]) if m["role"] == "user"), "")
         if any(m["role"] == "user" for m in msgs[cut:]):
             last_user = ""        # die aktuelle Aufgabe steht ohnehin noch wörtlich im Verlauf
-        self.info.emit(f"🗜 Kontext wird voll – fasse {cut - start} ältere Nachrichten zusammen …")
+        self.info.emit(f"📦 Kontext wird voll – fasse {cut - start} ältere Nachrichten zusammen …")
         # Zusammenfassungs-Anfrage selbst darf höchstens ~60 % des Kontexts belegen
         max_chars = int(self.n_ctx * 0.6 * 3.3)
         req = summary_request(self.chat.get("summary", ""), msgs, start, cut, last_user, max_chars)
+        if hint:
+            req[-1]["content"] += f"\n\nBesonderer Wunsch des Nutzers für die Zusammenfassung: {hint}"
         try:
             summary = complete(self.ep, self.model, req, {"temperature": 0.2, "max_tokens": 2000},
                                lambda: self.stopped)
@@ -109,7 +144,7 @@ class Agent(QObject):
         self.chat["summary"] = summary
         self.chat["summary_upto"] = cut
         self.chat.setdefault("compactions", []).append({"at": cut, "time": time.time()})
-        self.info.emit(f"🗜 {cut - start} ältere Nachrichten zusammengefasst ({len(summary)} Zeichen).")
+        self.info.emit(f"📦 {cut - start} ältere Nachrichten zusammengefasst ({len(summary)} Zeichen).")
         return True
 
     # --- Hauptschleife ---
@@ -152,12 +187,21 @@ class Agent(QObject):
             self.stats.emit(f"~{est} Tokens (geschätzt)", est, self.n_ctx or 0)
 
             self.live = {"content": "", "reasoning": ""}
+            self.usage.emit(estimate_tokens(payload), self.n_ctx or 0, -1.0)
             calls, usage, timings = {}, None, None
+            n_tok, t_first, t_emit = 0, None, 0.0
             for chunk in stream_chat(self.ep, self.model, payload, tools, params, lambda: self.stopped):
                 usage = chunk.get("usage") or usage
                 timings = chunk.get("timings") or timings
                 for ch in chunk.get("choices") or []:
                     d = ch.get("delta") or {}
+                    if d:     # grob: ein Stream-Häppchen ≈ ein Token
+                        n_tok += 1
+                        now = time.monotonic()
+                        t_first = t_first or now
+                        if now - t_emit > 0.5 and now > t_first:
+                            t_emit = now
+                            self.speed.emit(n_tok / (now - t_first))
                     if d.get("reasoning_content"):
                         self.live["reasoning"] += d["reasoning_content"]
                     if d.get("content"):
@@ -174,9 +218,11 @@ class Agent(QObject):
             if usage:
                 used = int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0))
                 txt = f"{used} Tokens"
-                if timings and timings.get("predicted_per_second"):
-                    txt += f" · {timings['predicted_per_second']:.1f} tok/s"
+                tps = float((timings or {}).get("predicted_per_second") or 0)
+                if tps:
+                    txt += f" · {tps:.1f} tok/s"
                 self.stats.emit(txt, used, self.n_ctx or 0)
+                self.usage.emit(used, self.n_ctx or 0, tps)
 
             msg = {"role": "assistant", "content": self.live["content"]}
             if self.live["reasoning"]:
