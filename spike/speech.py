@@ -179,8 +179,26 @@ def speakable(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def gpu_free_mb() -> int:
+    """Größter freier GPU-Speicher in MB (0 = keine NVIDIA-GPU oder alles voll)."""
+    if not shutil.which("nvidia-smi"):
+        return 0
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=10)
+        return max(int(x) for x in r.stdout.split() if x.strip().isdigit())
+    except Exception:
+        return 0
+
+
 def chunks(text: str, size=220) -> list[str]:
-    sents = re.split(r"(?<=[.!?…:])\s+", text)
+    sents = [x for x in re.split(r"(?<=[.!?…:])\s+", text) if x]
+    if len(sents) > 1:            # erster Satz allein → Vorlesen beginnt schneller
+        return [sents[0]] + _merge(sents[1:], size)
+    return _merge(sents, size)
+
+
+def _merge(sents, size):
     out, cur = [], ""
     for s in sents:
         if len(cur) + len(s) < size:
@@ -237,10 +255,21 @@ class Speaker:
         cmd = (self.settings.get("tts_start") or "").strip()
         if not cmd:
             raise RuntimeError(f"Vorlese-Server {url} läuft nicht (⚙ → Sprache: Startbefehl eintragen)")
-        self.on_state("Starte Vorlese-Server … (beim ersten Mal bis zu 2 min)")
+        dev = self.settings.get("tts_device", "auto")
+        need = int(self.settings.get("tts_min_vram_mb", 6000))
+        free = gpu_free_mb()
+        use_cpu = dev == "cpu" or (dev == "auto" and free < need)
+        env = dict(os.environ)
+        if use_cpu:
+            env["CUDA_VISIBLE_DEVICES"] = ""          # GPUs ausblenden → VoxCPM rechnet auf der CPU
+            self.on_state(f"Starte Vorlese-Server auf der CPU (GPU-Speicher frei: {free} MB) – langsam, "
+                          f"etwa 5× so lang wie gesprochen …")
+        else:
+            self.on_state("Starte Vorlese-Server auf der GPU …")
+        self.cpu_mode = use_cpu
         if not (self._started_server and self._started_server.poll() is None):
             self._started_server = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.DEVNULL,
-                                                    stderr=subprocess.DEVNULL, start_new_session=True)
+                                                    stderr=subprocess.DEVNULL, start_new_session=True, env=env)
             import atexit
             atexit.register(lambda p=self._started_server: p.poll() is None and os.killpg(p.pid, signal.SIGTERM))
         for _ in range(240):
@@ -272,7 +301,8 @@ class Speaker:
             parts = chunks(speakable(text))
             if not parts:
                 return
-            self.on_state("🔊 Erzeuge Sprache …")
+            slow = " (CPU, dauert)" if getattr(self, "cpu_mode", False) else ""
+            self.on_state(f"🔊 Erzeuge Sprache …{slow}")
             nxt = self._synth(url, parts[0])
             for i in range(len(parts)):
                 if stop.is_set():

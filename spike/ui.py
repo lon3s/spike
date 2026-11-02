@@ -347,12 +347,19 @@ class SettingsDialog(QDialog):
         line("tts_voice", "Stimme", "senol1")
         line("tts_language", "Sprache", "de")
         line("tts_start", "Startbefehl (falls nicht läuft)", "leer = nicht automatisch starten")
+        tdev = QComboBox()
+        tdev.addItem("auto – GPU, wenn genug frei ist, sonst CPU", "auto")
+        tdev.addItem("immer GPU", "gpu")
+        tdev.addItem("immer CPU (langsam, ~5× Echtzeit)", "cpu")
+        tdev.setCurrentIndex(max(0, tdev.findData(s.get("tts_device", "auto"))))
+        f.addRow("Rechnen auf", tdev)
+        self.sp_fields["tts_device"] = tdev.currentData
         ta = QCheckBox("Antworten automatisch vorlesen")
         ta.setChecked(bool(s.get("tts_auto")))
         f.addRow(ta)
         self.sp_fields["tts_auto"] = ta.isChecked
-        hint = QLabel("VoxCPM braucht eine GPU mit einigen GB frei. Wird es automatisch gestartet, beendet spike es "
-                      "beim Beenden wieder.")
+        hint = QLabel("VoxCPM: auf der GPU schnell, auf der CPU etwa 5× so lang wie gesprochen (gemessen). Wird es "
+                      "automatisch gestartet, beendet spike es beim Beenden wieder.")
         hint.setWordWrap(True)
         hint.setObjectName("Muted")
         f.addRow(hint)
