@@ -2,14 +2,18 @@
 import html
 import json
 import re
+import os
+import shutil
 import subprocess
+import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 
-from . import plugins
+from . import memory, plugins
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
@@ -48,13 +52,33 @@ TOOL_SPECS = {
     "list_dir": _fn("list_dir", "Listet ein Verzeichnis auf.", {"path": {"type": "string"}}, ["path"]),
     "write_file": _fn("write_file", "Schreibt eine Textdatei (Nutzer muss bestätigen).",
                       {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    "python_run": _fn("python_run", "Führt Python-3-Code aus (Nutzer bestätigt) und gibt stdout/stderr zurück. "
+                      "Für Rechnen, Daten auswerten, Dateien umwandeln. Ergebnisse mit print() ausgeben.",
+                      {"code": {"type": "string"}}, ["code"]),
+    "pc": _fn("pc", "Steuert den Linux-PC (KDE). Aktionen: open (Datei/Ordner/URL/Programm öffnen, value=Pfad oder "
+              "URL), clipboard_get, clipboard_set (value=Text), notify (value=Text), volume (value=leer zum Abfragen, "
+              "50 / +5 / -5 / mute), media (value=play-pause|next|previous|stop|status).",
+              {"action": {"type": "string", "enum": ["open", "clipboard_get", "clipboard_set", "notify",
+                                                     "volume", "media"]},
+               "value": {"type": "string"}}, ["action"]),
+    "memory_save": _fn("memory_save", "Merkt sich dauerhaft einen kurzen Fakt über den Nutzer/seine Systeme "
+                       "(ein Satz). Nur Wichtiges, das in späteren Chats nützt; nichts Vertrauliches.",
+                       {"fact": {"type": "string"}}, ["fact"]),
+    "memory_search": _fn("memory_search", "Durchsucht das Gedächtnis nach Stichworten (leer = neueste).",
+                         {"query": {"type": "string"}}),
+    "memory_delete": _fn("memory_delete", "Löscht einen Gedächtnis-Eintrag per id (z. B. wenn er falsch ist).",
+                         {"id": {"type": "string"}}, ["id"]),
 }
+
+MEMORY_TOOLS = ["memory_save", "memory_search", "memory_delete"]
 
 TOOL_LABELS = {
     "web_search": "Websuche", "fetch_url": "Seite laden (schnell)", "browser_open": "Browser: öffnen",
     "browser_read": "Browser: lesen", "browser_click": "Browser: klicken", "browser_type": "Browser: tippen",
     "browser_back": "Browser: zurück", "run_shell": "Shell-Befehl ⚠", "read_file": "Datei lesen",
-    "list_dir": "Ordner auflisten", "write_file": "Datei schreiben ⚠",
+    "list_dir": "Ordner auflisten", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
+    "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
+    "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
 }
 
 
@@ -303,10 +327,123 @@ class ToolBox:
         p.write_text(content, "utf-8")
         return f"Geschrieben: {p} ({len(content)} Zeichen)"
 
+    # --- Python ---
+    def t_python_run(self, code, confirm=None):
+        if not confirm(f"Python-Code ausführen?\n\n{code[:3000]}"):
+            return "Vom Nutzer abgelehnt."
+        work = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "spike" / "python"
+        work.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", suffix=".py", dir=work, delete=False, encoding="utf-8") as f:
+            f.write(code)
+        try:
+            timeout = int(self.settings.get("python_timeout", 120))
+            p = subprocess.run([sys.executable, "-I", f.name], capture_output=True, text=True,
+                               timeout=timeout, cwd=work)
+            out = f"exit={p.returncode}\n{p.stdout}{p.stderr}"
+        except subprocess.TimeoutExpired:
+            out = f"Abgebrochen: länger als {self.settings.get('python_timeout', 120)} s."
+        finally:
+            Path(f.name).unlink(missing_ok=True)
+        return clip(out.strip() + f"\n(Arbeitsordner: {work})", self.limit)
+
+    # --- PC-Steuerung ---
+    @staticmethod
+    def _cmd(args, input_text=None, timeout=10):
+        p = subprocess.run(args, capture_output=True, text=True, input=input_text, timeout=timeout)
+        return (p.stdout + p.stderr).strip(), p.returncode
+
+    def t_pc(self, action, value="", confirm=None):
+        value = (value or "").strip()
+        if action == "open":
+            if not value:
+                return "Fehler: value (Pfad oder URL) fehlt."
+            target = value if re.match(r"^[a-z]+://", value) else str(Path(value).expanduser())
+            if not confirm(f"Öffnen?\n\n{target}"):
+                return "Vom Nutzer abgelehnt."
+            subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return f"Geöffnet: {target}"
+        if action == "clipboard_get":
+            out, rc = self._cmd(["wl-paste", "--no-newline"])
+            return clip(out, self.limit) if rc == 0 else "Zwischenablage ist leer oder enthält keinen Text."
+        if action == "clipboard_set":
+            subprocess.run(["wl-copy"], input=value, text=True, timeout=5)
+            return f"In die Zwischenablage kopiert ({len(value)} Zeichen)."
+        if action == "notify":
+            self._cmd(["notify-send", "-a", "spike", "-i", "spike", "spike", value or "…"])
+            return "Benachrichtigung gezeigt."
+        if action == "volume":
+            sink = "@DEFAULT_AUDIO_SINK@"
+            if value == "mute":
+                self._cmd(["wpctl", "set-mute", sink, "toggle"])
+            elif re.fullmatch(r"[+-]\d{1,3}", value):
+                self._cmd(["wpctl", "set-volume", "-l", "1.0", sink, f"{value[1:]}%{value[0]}"])
+            elif re.fullmatch(r"\d{1,3}", value):
+                self._cmd(["wpctl", "set-volume", "-l", "1.0", sink, f"{min(100, int(value))}%"])
+            elif value:
+                return "Fehler: volume erwartet leer, eine Zahl 0–100, +N, -N oder mute."
+            out, _ = self._cmd(["wpctl", "get-volume", sink])
+            m = re.search(r"([\d.]+)", out)
+            pct = f"{round(float(m.group(1)) * 100)} %" if m else out
+            return f"Lautstärke: {pct}" + (" (stumm)" if "MUTED" in out else "")
+        if action == "media":
+            return self._media(value or "status")
+        return f"Fehler: unbekannte Aktion '{action}'."
+
+    def _media(self, what):
+        qd = shutil.which("qdbus6") or shutil.which("qdbus")
+        if not qd:
+            return "Fehler: qdbus6 nicht gefunden."
+        out, _ = self._cmd([qd])
+        players = [l.strip() for l in out.splitlines() if l.strip().startswith("org.mpris.MediaPlayer2.")]
+        if not players:
+            return "Kein Mediaplayer aktiv."
+        path, iface = "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player"
+
+        def prop(svc, name):
+            return self._cmd([qd, svc, path, "org.freedesktop.DBus.Properties.Get", iface, name])[0]
+
+        # bevorzugt den Player, der gerade spielt
+        svc = next((p for p in players if prop(p, "PlaybackStatus") == "Playing"), players[0])
+        method = {"play-pause": "PlayPause", "next": "Next", "previous": "Previous", "stop": "Stop",
+                  "play": "Play", "pause": "Pause"}.get(what)
+        if method:
+            self._cmd([qd, svc, path, f"{iface}.{method}"])
+        meta = prop(svc, "Metadata")
+        title = re.search(r"xesam:title: (.*)", meta)
+        artist = re.search(r"xesam:artist: (.*)", meta)
+        status = prop(svc, "PlaybackStatus")
+        name = svc.replace("org.mpris.MediaPlayer2.", "")
+        song = " – ".join(x.group(1).strip() for x in (artist, title) if x)
+        return f"{name}: {status}" + (f" · {song}" if song else "")
+
+    # --- Gedächtnis ---
+    def t_memory_save(self, fact, confirm=None):
+        if not self.settings.get("memory_enabled", True):
+            return "Gedächtnis ist in den Einstellungen ausgeschaltet."
+        m = memory.add(fact)
+        return f"Gemerkt [{m['id']}]: {m['text']}"
+
+    def t_memory_search(self, query="", confirm=None):
+        hits = memory.search(query)
+        if not hits:
+            return "Nichts gefunden."
+        return clip("\n".join(f"- [{m['id']}] {m['text']}" for m in hits), self.limit)
+
+    def t_memory_delete(self, id, confirm=None):
+        return "Gelöscht." if memory.delete(id) else f"Kein Eintrag mit id {id}."
+
+
+def expand(names):
+    """"*" steht für alle Werkzeuge inkl. Plugins (auch später hinzugefügte)."""
+    if "*" in (names or []):
+        return list(TOOL_SPECS) + list(plugins.PLUGINS)
+    return list(names or [])
+
 
 def specs_for(names):
     out = []
-    for n in names:
+    for n in expand(names):
         if n in TOOL_SPECS:
             out.append(TOOL_SPECS[n])
         elif n in plugins.PLUGINS:

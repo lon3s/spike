@@ -18,7 +18,7 @@ from .agent import Agent
 from .client import get_n_ctx, list_models
 from .chatview import ChatView, shadow
 from .theme import THEMES, palette, qss
-from . import plugins
+from . import memory, plugins
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
 
@@ -190,17 +190,36 @@ class SettingsDialog(QDialog):
             grid = QWidget()
             g = QVBoxLayout(grid)
             g.setContentsMargins(0, 0, 0, 0)
+            cb_all = QCheckBox("Alle Werkzeuge – das Modell entscheidet selbst (auch künftige Plugins)")
+            cb_all.setStyleSheet("font-weight: 600;")
+            g.addWidget(cb_all)
             for name, label in all_tools():
                 cb = QCheckBox(label)
                 cb.toggled.connect(changed)
                 g.addWidget(cb)
                 boxes[name] = cb
 
+            def all_toggled(on):
+                for cb in boxes.values():
+                    cb.setEnabled(not on)
+                    if on:
+                        cb.setChecked(True)
+                changed()
+            cb_all.toggled.connect(all_toggled)
+
             def set_tools(v):
+                v = v or []
+                cb_all.blockSignals(True)
+                cb_all.setChecked("*" in v)
+                cb_all.blockSignals(False)
                 for n, cb in boxes.items():
-                    cb.setChecked(n in (v or []))
+                    cb.setEnabled("*" not in v)
+                    cb.setChecked("*" in v or n in v)
+
+            def get_tools():
+                return ["*"] if cb_all.isChecked() else [n for n, cb in boxes.items() if cb.isChecked()]
             f.addRow("Werkzeuge\n(nur gewählte\nkosten Kontext)", grid)
-            fields["tools"] = (grid, lambda: [n for n, cb in boxes.items() if cb.isChecked()], set_tools)
+            fields["tools"] = (grid, get_tools, set_tools)
             return fields
 
         self.pr_editor = ListEditor(
@@ -244,6 +263,7 @@ class SettingsDialog(QDialog):
         f.addRow(self.plugin_label)
         self._show_plugins()
         tabs.addTab(gen, "Allgemein")
+        tabs.addTab(self._memory_tab(s), "Gedächtnis && Kontext")
         tabs.addTab(self._glow_tab(s), "Popup-Rahmen")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -255,6 +275,109 @@ class SettingsDialog(QDialog):
 
         self._bridge = Bridge()
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _memory_tab(self, s):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        f = QFormLayout()
+        lay.addLayout(f)
+        self.cb_mem = QCheckBox("Gedächtnis benutzen")
+        self.cb_mem.setChecked(bool(s.get("memory_enabled", True)))
+        f.addRow(self.cb_mem)
+        self.sp_mem = QSpinBox()
+        self.sp_mem.setRange(0, 20_000)
+        self.sp_mem.setSingleStep(250)
+        self.sp_mem.setSuffix(" Zeichen")
+        self.sp_mem.setValue(int(s.get("memory_prompt_chars", 1500)))
+        self.sp_mem.setToolTip("So viel Gedächtnis geht höchstens in jeden Chat (≈ Zeichen / 3,3 Tokens). "
+                               "Angeheftete und zur ersten Nachricht passende Einträge kommen zuerst, "
+                               "den Rest holt sich das Modell bei Bedarf mit memory_search.")
+        f.addRow("Gedächtnis im Prompt höchstens", self.sp_mem)
+        self.cb_compact = QCheckBox("Älteren Verlauf automatisch zusammenfassen, wenn der Kontext voll wird")
+        self.cb_compact.setChecked(bool(s.get("auto_compact", True)))
+        f.addRow(self.cb_compact)
+        self.sp_cat = QSpinBox()
+        self.sp_cat.setRange(30, 95)
+        self.sp_cat.setSuffix(" %")
+        self.sp_cat.setValue(int(s.get("compact_at_percent", 70)))
+        f.addRow("Zusammenfassen ab Auslastung", self.sp_cat)
+        self.sp_ckeep = QSpinBox()
+        self.sp_ckeep.setRange(10, 60)
+        self.sp_ckeep.setSuffix(" %")
+        self.sp_ckeep.setValue(int(s.get("compact_keep_percent", 30)))
+        f.addRow("Davon wörtlich behalten (neuester Teil)", self.sp_ckeep)
+        self.sp_pyto = QSpinBox()
+        self.sp_pyto.setRange(5, 3600)
+        self.sp_pyto.setSuffix(" s")
+        self.sp_pyto.setValue(int(s.get("python_timeout", 120)))
+        f.addRow("Zeitlimit für Python", self.sp_pyto)
+
+        lay.addWidget(QLabel("<b>Einträge</b> (Änderungen gelten sofort) – 📌 = immer im Prompt"))
+        self.mem_list = QListWidget()
+        self.mem_list.itemDoubleClicked.connect(lambda _: self._mem_edit())
+        lay.addWidget(self.mem_list, 1)
+        row = QHBoxLayout()
+        for text, slot in (("+ Neu", self._mem_add), ("Bearbeiten", self._mem_edit),
+                           ("📌 Anheften", self._mem_pin), ("Löschen", self._mem_del)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch(1)
+        self.mem_count = QLabel()
+        row.addWidget(self.mem_count)
+        lay.addLayout(row)
+        self._mem_fill()
+        return w
+
+    def _mem_fill(self):
+        self.mem_list.clear()
+        items = memory.load()
+        for m in items:
+            it = QListWidgetItem(("📌 " if m.get("pinned") else "") + m["text"])
+            it.setData(Qt.UserRole, m["id"])
+            it.setToolTip(f"id {m['id']}")
+            self.mem_list.addItem(it)
+        chars = sum(len(m["text"]) + 10 for m in items)
+        self.mem_count.setText(f"{len(items)} Einträge · {chars} Zeichen gesamt")
+
+    def _mem_current(self):
+        it = self.mem_list.currentItem()
+        return it.data(Qt.UserRole) if it else None
+
+    def _mem_ask(self, title, text=""):
+        from PySide6.QtWidgets import QInputDialog
+        val, ok = QInputDialog.getMultiLineText(self, title, f"Ein kurzer Fakt (max. {memory.MAX_FACT} Zeichen):", text)
+        return val.strip() if ok else ""
+
+    def _mem_add(self):
+        t = self._mem_ask("Neuer Eintrag")
+        if t:
+            memory.add(t)
+            self._mem_fill()
+
+    def _mem_edit(self):
+        mid = self._mem_current()
+        if not mid:
+            return
+        old = next((m["text"] for m in memory.load() if m["id"] == mid), "")
+        t = self._mem_ask("Eintrag bearbeiten", old)
+        if t:
+            memory.update(mid, t)
+            self._mem_fill()
+
+    def _mem_pin(self):
+        mid = self._mem_current()
+        if mid:
+            m = next((m for m in memory.load() if m["id"] == mid), None)
+            if m:
+                memory.set_pinned(mid, not m.get("pinned"))
+                self._mem_fill()
+
+    def _mem_del(self):
+        mid = self._mem_current()
+        if mid:
+            memory.delete(mid)
+            self._mem_fill()
 
     def _glow_tab(self, s):
         w = QWidget()
@@ -374,7 +497,10 @@ class SettingsDialog(QDialog):
                  theme=self.cb_theme.currentText(),
                  popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
                  popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
-                 popup_glow_width=self.sp_glow_width.value())
+                 popup_glow_width=self.sp_glow_width.value(),
+                 memory_enabled=self.cb_mem.isChecked(), memory_prompt_chars=self.sp_mem.value(),
+                 auto_compact=self.cb_compact.isChecked(), compact_at_percent=self.sp_cat.value(),
+                 compact_keep_percent=self.sp_ckeep.value(), python_timeout=self.sp_pyto.value())
         return self.cfg
 
 

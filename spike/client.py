@@ -69,3 +69,20 @@ def stream_chat(ep, model, messages, tools, params, should_stop):
                 continue
     finally:
         resp.close()
+
+
+def complete(ep, model, messages, params, should_stop=lambda: False) -> str:
+    """Antwort ohne Werkzeuge als Text (für Zusammenfassungen). Denken wird – wo möglich – abgeschaltet."""
+    def run(extra):
+        out = []
+        for chunk in stream_chat(ep, model, messages, None, {**params, **extra}, should_stop):
+            for ch in chunk.get("choices") or []:
+                out.append((ch.get("delta") or {}).get("content") or "")
+        return "".join(out).strip()
+    try:
+        # llama.cpp: Denken für diese Anfrage aus (Qwen u. a.); andere Server lehnen das evtl. ab → ohne
+        return run({"chat_template_kwargs": {"enable_thinking": False}})
+    except RuntimeError as e:
+        if "HTTP 4" not in str(e):
+            raise
+        return run({})

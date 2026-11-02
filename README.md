@@ -18,6 +18,16 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   - Das „Denken“ (`reasoning_content`) wird nur angezeigt und nicht zurückgeschickt.
   - Wird der Kontext voll, fallen die ältesten Runden weg.
   - Die Kontextgröße kommt vom Server (`/props`), die Auslastung zeigt die Statusleiste.
+- **Langer Verlauf** (z. B. beim Programmieren): Ab 70 % Auslastung fasst das Modell den älteren Teil selbst zusammen,
+  auch mitten in einer Werkzeug-Kette. Die neuesten ~30 % bleiben wörtlich, Ziel, Pfade und offene Punkte bleiben in der
+  Zusammenfassung erhalten. Einstellbar unter ⚙ → Gedächtnis & Kontext.
+- **Gedächtnis**: „Merk dir …“ speichert kurze Fakten (`~/.local/share/spike/memory.json`). Pro Chat geht nur ein
+  begrenzter Auszug in den Prompt (Standard 1500 Zeichen): angeheftete Einträge, dann die zur ersten Nachricht passenden,
+  dann die neuesten. Den Rest sucht das Modell bei Bedarf mit `memory_search`. Der Auszug bleibt pro Chat gleich,
+  damit der Prompt-Cache von llama.cpp greift. Einträge verwalten: ⚙ → Gedächtnis & Kontext.
+- **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
+  und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
+  Medien über MPRIS/`qdbus6`).
 - Chats werden lokal gespeichert (`~/.local/share/spike/chats`).
 
 ## Installation (auf jedem PC)
