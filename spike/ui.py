@@ -3,11 +3,12 @@ import copy
 import threading
 import time
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPainter
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (QAction, QColor, QConicalGradient, QDesktopServices, QKeySequence, QPainter,
+                           QPainterPath, QPen, QRegion)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QColorDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
     QVBoxLayout, QWidget,
 )
@@ -243,6 +244,7 @@ class SettingsDialog(QDialog):
         f.addRow(self.plugin_label)
         self._show_plugins()
         tabs.addTab(gen, "Allgemein")
+        tabs.addTab(self._glow_tab(s), "Popup-Rahmen")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
@@ -253,6 +255,82 @@ class SettingsDialog(QDialog):
 
         self._bridge = Bridge()
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _glow_tab(self, s):
+        w = QWidget()
+        f = QFormLayout(w)
+        self.cb_glow = QCheckBox("Leuchtrahmen um das Tray-Popup")
+        self.cb_glow.setChecked(bool(s.get("popup_glow", True)))
+        f.addRow(self.cb_glow)
+        self.cb_glow_style = QComboBox()
+        self.cb_glow_style.addItem("Lauflicht (Lichtpunkt mit Schweif)", "lauflicht")
+        self.cb_glow_style.addItem("Farbverlauf (ganzer Rahmen, dreht sich)", "verlauf")
+        i = self.cb_glow_style.findData(s.get("popup_glow_style", "lauflicht"))
+        self.cb_glow_style.setCurrentIndex(max(0, i))
+        f.addRow("Stil", self.cb_glow_style)
+
+        self.glow_colors = list(s.get("popup_glow_colors") or ["#8b7cff"])
+        self.glow_row = QHBoxLayout()
+        crow = QWidget()
+        crow.setLayout(self.glow_row)
+        self.glow_row.setContentsMargins(0, 0, 0, 0)
+        f.addRow("Farben", crow)
+        self._glow_buttons()
+
+        self.sp_glow_speed = QDoubleSpinBox()
+        self.sp_glow_speed.setRange(0.5, 60)
+        self.sp_glow_speed.setSingleStep(0.5)
+        self.sp_glow_speed.setSuffix(" s pro Umlauf")
+        self.sp_glow_speed.setValue(float(s.get("popup_glow_speed", 4.0)))
+        f.addRow("Geschwindigkeit", self.sp_glow_speed)
+        self.sp_glow_width = QSpinBox()
+        self.sp_glow_width.setRange(1, 8)
+        self.sp_glow_width.setSuffix(" px")
+        self.sp_glow_width.setValue(int(s.get("popup_glow_width", 2)))
+        f.addRow("Breite", self.sp_glow_width)
+        hint = QLabel("Das Licht läuft im Uhrzeigersinn um den Rahmen. Farbe anklicken zum Ändern, "
+                      "„+“ fügt eine Farbe hinzu, Rechtsklick auf eine Farbe entfernt sie.")
+        hint.setWordWrap(True)
+        f.addRow(hint)
+        return w
+
+    def _glow_buttons(self):
+        while self.glow_row.count():
+            it = self.glow_row.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for i, col in enumerate(self.glow_colors):
+            b = QPushButton()
+            b.setFixedSize(34, 28)
+            b.setToolTip(f"{col} – klicken zum Ändern, Rechtsklick entfernt")
+            b.setStyleSheet(f"background: {col}; border: 1px solid #888; border-radius: 8px;")
+            b.clicked.connect(lambda _=False, i=i: self._pick_glow(i))
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda _p, i=i: self._del_glow(i))
+            self.glow_row.addWidget(b)
+        add = QPushButton("+")
+        add.setFixedSize(34, 28)
+        add.setToolTip("Farbe hinzufügen")
+        add.setEnabled(len(self.glow_colors) < 8)
+        add.clicked.connect(lambda: self._pick_glow(len(self.glow_colors)))
+        self.glow_row.addWidget(add)
+        self.glow_row.addStretch(1)
+
+    def _pick_glow(self, i):
+        start = QColor(self.glow_colors[i] if i < len(self.glow_colors) else "#ffffff")
+        col = QColorDialog.getColor(start, self, "Rahmenfarbe")
+        if not col.isValid():
+            return
+        if i < len(self.glow_colors):
+            self.glow_colors[i] = col.name()
+        else:
+            self.glow_colors.append(col.name())
+        self._glow_buttons()
+
+    def _del_glow(self, i):
+        if len(self.glow_colors) > 1:
+            del self.glow_colors[i]
+            self._glow_buttons()
 
     def _show_plugins(self):
         names = ", ".join(plugins.PLUGINS) or "keine"
@@ -293,11 +371,108 @@ class SettingsDialog(QDialog):
         s.update(tool_output_max_chars=self.sp_out.value(), keep_full_tool_results=self.sp_keep.value(),
                  old_tool_result_chars=self.sp_old.value(), max_steps=self.sp_steps.value(),
                  default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked(),
-                 theme=self.cb_theme.currentText())
+                 theme=self.cb_theme.currentText(),
+                 popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
+                 popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
+                 popup_glow_width=self.sp_glow_width.value())
         return self.cfg
 
 
 # ---------- Hauptfenster ----------
+
+class GlowOverlay(QWidget):
+    """Leuchtrahmen über dem Popup: Licht läuft im Uhrzeigersinn um den runden Rahmen."""
+    FPS = 40
+
+    def __init__(self, shell):
+        super().__init__(shell)
+        self.shell = shell
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self._angle = 90.0
+        self._last = time.monotonic()
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000 // self.FPS)
+        self._timer.timeout.connect(self._tick)
+
+    def settings(self):
+        return self.shell.win.cfg["settings"]
+
+    def sync(self):
+        """Timer je nach Sichtbarkeit und Einstellung starten/stoppen."""
+        on = bool(self.settings().get("popup_glow", True)) and self.window().isVisible()
+        if on and not self._timer.isActive():
+            self._last = time.monotonic()
+            self._timer.start()
+        elif not on and self._timer.isActive():
+            self._timer.stop()
+        self.update()
+
+    def _tick(self):
+        now = time.monotonic()
+        dt, self._last = min(now - self._last, 0.2), now
+        period = max(0.3, float(self.settings().get("popup_glow_speed", 4.0)))
+        # QConicalGradient zählt gegen den Uhrzeigersinn → Winkel verringern = Uhrzeigersinn
+        self._angle = (self._angle - 360.0 * dt / period) % 360.0
+        self.update(self._ring_region())
+
+    def _ring_region(self):
+        r = self.shell.frame.geometry()
+        pad = 10 + int(self.settings().get("popup_glow_width", 2))
+        inner = r.adjusted(pad + self.shell.RADIUS // 2, pad + self.shell.RADIUS // 2,
+                           -pad - self.shell.RADIUS // 2, -pad - self.shell.RADIUS // 2)
+        return QRegion(r.adjusted(-pad, -pad, pad, pad)) - QRegion(inner)
+
+    def _gradient(self, center):
+        s = self.settings()
+        cols = [QColor(c) for c in (s.get("popup_glow_colors") or ["#8b7cff"]) if QColor(c).isValid()] \
+            or [QColor("#8b7cff")]
+        g = QConicalGradient(center, self._angle)
+        if s.get("popup_glow_style", "lauflicht") == "verlauf":
+            n = len(cols)
+            for i, c in enumerate(cols):
+                g.setColorAt(i / n, c)
+            g.setColorAt(1.0, cols[0])
+        else:
+            # Kopf bei 0 (vorne, im Uhrzeigersinn), Schweif dahinter (gegen den Uhrzeigersinn) blendet aus
+            tail = 0.42
+            n = len(cols)
+            for i, c in enumerate(cols):
+                t = tail * i / max(1, n)
+                c = QColor(c)
+                c.setAlphaF(1.0 - 0.75 * (t / tail))
+                g.setColorAt(t, c)
+            end = QColor(cols[-1])
+            end.setAlpha(0)
+            g.setColorAt(tail, end)
+            g.setColorAt(0.999, end)
+            g.setColorAt(1.0, cols[0])
+        return g
+
+    def paintEvent(self, e):
+        s = self.settings()
+        if not s.get("popup_glow", True):
+            return
+        r = QRectF(self.shell.frame.geometry()).adjusted(0.5, 0.5, -0.5, -0.5)
+        R = self.shell.RADIUS
+        path = QPainterPath()
+        path.addRoundedRect(r, R, R)
+        width = float(s.get("popup_glow_width", 2))
+        grad = self._gradient(r.center())
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(Qt.NoBrush)
+        if s.get("popup_glow_style", "lauflicht") != "verlauf":
+            base = QColor((s.get("popup_glow_colors") or ["#8b7cff"])[0])
+            base.setAlpha(45)
+            p.setPen(QPen(base, 1.0))
+            p.drawPath(path)
+        for extra, opacity in ((10, 0.10), (6, 0.18), (3, 0.35), (0, 1.0)):   # weiches Leuchten nach außen
+            p.setOpacity(opacity)
+            p.setPen(QPen(grad, width + extra, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
+        p.end()
+
 
 class PopupShell(QWidget):
     """Durchsichtiger Rand mit selbst gemaltem weichen Schatten + runder Inhalt."""
@@ -315,6 +490,21 @@ class PopupShell(QWidget):
         lay.setContentsMargins(self.PAD, self.PAD - 4, self.PAD, self.PAD + 4)
         lay.addWidget(frame)
         self.frame = frame
+        self.glow = GlowOverlay(self)
+        self.glow.raise_()
+
+    def resizeEvent(self, e):
+        self.glow.setGeometry(self.rect())
+        self.glow.raise_()
+        super().resizeEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, self.glow.sync)
+
+    def hideEvent(self, e):
+        self.glow.sync()
+        super().hideEvent(e)
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -787,9 +977,22 @@ class MainWindow(QMainWindow):
             self.cfg["endpoints"], self.cfg["profiles"] = new["endpoints"], new["profiles"]
             self.cfg["settings"].update(new["settings"])   # gleiches dict, ToolBox sieht Änderungen
             C.save_config(self.cfg)
-            self._fill_combos()
-            self.apply_theme()
-            self.refresh_models()
+            self.config_changed()
+            if self.ctrl:     # anderes Fenster (Popup ↔ großes Fenster) mitziehen
+                for w in (self.ctrl.main, self.ctrl.popup):
+                    if w is not None and w is not self:
+                        fresh = C.load_config()
+                        w.cfg["endpoints"], w.cfg["profiles"] = fresh["endpoints"], fresh["profiles"]
+                        w.cfg["settings"].update(fresh["settings"])
+                        w.config_changed()
+
+    def config_changed(self):
+        self._fill_combos()
+        self.apply_theme()
+        self.refresh_models()
+        glow = getattr(self.centralWidget(), "glow", None)
+        if glow:
+            glow.sync()
 
     def changeEvent(self, e):
         # Popup schließt sich, sobald man daneben klickt (wie das Lautstärke-Popup)

@@ -75,6 +75,12 @@ DEFAULT_CONFIG = {
         "theme": "system",
         "compact": False,
         "default_n_ctx": 8192,
+        # Leuchtrahmen um das Tray-Popup
+        "popup_glow": True,
+        "popup_glow_style": "lauflicht",          # "lauflicht" oder "verlauf"
+        "popup_glow_colors": ["#8b7cff", "#22d3ee", "#f472b6"],
+        "popup_glow_speed": 4.0,                  # Sekunden pro Umlauf
+        "popup_glow_width": 2,                    # Pixel
     },
 }
 
