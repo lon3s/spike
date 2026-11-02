@@ -14,9 +14,22 @@ ALLOWED_KEYS = {"role", "content", "tool_calls", "tool_call_id", "name"}
 CONTINUE_NOTE = "(Fortsetzung – die früheren Schritte stehen zusammengefasst im System-Prompt.)"
 
 
+IMAGE_TOKENS = 800
+
+
 def estimate_tokens(messages) -> int:
-    chars = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
-    return int(chars / 3.3) + 1
+    chars, images = 0, 0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):        # Text + Bilder
+            for part in c:
+                if part.get("type") == "image_url":
+                    images += 1
+                else:
+                    chars += len(part.get("text") or "")
+            m = {k: v for k, v in m.items() if k != "content"}
+        chars += len(json.dumps(m, ensure_ascii=False))
+    return int(chars / 3.3) + 1 + images * IMAGE_TOKENS
 
 
 def budget(n_ctx, max_tokens) -> int:
@@ -24,8 +37,27 @@ def budget(n_ctx, max_tokens) -> int:
     return n_ctx - reserve
 
 
-def _clean(history, keep_full_tools, old_tool_chars):
+def _clean(history, keep_full_tools, old_tool_chars, vision=False, max_images=3):
     msgs = [{k: v for k, v in m.items() if k in ALLOWED_KEYS} for m in history]
+    # Bilder: nur die letzten max_images als echte Bilder (wenn der Server sie versteht), sonst kurzer Hinweis
+    img_pos = [i for i, m in enumerate(history) if m.get("_images")]
+    keep_img = set(img_pos[-max_images:]) if vision else set()
+    for i in img_pos:
+        names = [p.rsplit("/", 1)[-1].split("-", 3)[-1] for p in history[i]["_images"]]
+        text = msgs[i].get("content") or ""
+        if i in keep_img:
+            from .attachments import data_url
+            parts = [{"type": "text", "text": text or "(Bild)"}]
+            for p in history[i]["_images"]:
+                try:
+                    parts.append({"type": "image_url", "image_url": {"url": data_url(p)}})
+                except Exception as e:
+                    parts[0]["text"] += f"\n[Bild {p} nicht lesbar: {e}]"
+            msgs[i]["content"] = parts
+        else:
+            why = "älteres Bild, nicht mehr mitgeschickt" if vision else \
+                "das aktuelle Modell kann keine Bilder sehen – sag das dem Nutzer, falls er nach dem Bild fragt"
+            msgs[i]["content"] = (text + "\n" if text else "") + f"[Bild angehängt: {', '.join(names)} ({why})]"
     tool_idx = [i for i, m in enumerate(msgs) if m["role"] == "tool"]
     old = tool_idx[:-keep_full_tools] if keep_full_tools > 0 else tool_idx
     for i in old:
@@ -43,9 +75,9 @@ def system_with_summary(system, summary):
 
 
 def build_messages(system, history, n_ctx, max_tokens, keep_full_tools=2, old_tool_chars=300,
-                   summary="", start=0):
+                   summary="", start=0, vision=False):
     """Gibt (messages_für_api, anzahl_verworfener_nachrichten) zurück."""
-    msgs = _clean(history[start:], keep_full_tools, old_tool_chars)
+    msgs = _clean(history[start:], keep_full_tools, old_tool_chars, vision)
     if msgs and msgs[0]["role"] != "user":
         # Viele Chat-Vorlagen verlangen, dass nach dem System-Prompt eine Nutzer-Nachricht kommt
         msgs.insert(0, {"role": "user", "content": CONTINUE_NOTE})

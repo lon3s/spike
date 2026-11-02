@@ -52,6 +52,7 @@ class Agent(QObject):
         self.pending = None       # offene Freigabe: {"text", "key", "label"} – wird im Chat als Karte gezeigt
         self.live_tool = None     # laufendes Werkzeug: {"id", "out"} – Live-Ausgabe im Terminal-Block
         self._cur = ("", {})
+        self.vision = False       # versteht der Server Bilder? (setzt die Oberfläche)
         self._remember = False
         self._reason = ""
 
@@ -80,7 +81,7 @@ class Agent(QObject):
         payload, _ = build_messages(
             self._system_prompt(), self.chat["messages"], 0, 0,
             int(s.get("keep_full_tool_results", 2)), int(s.get("old_tool_result_chars", 300)),
-            self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)))
+            self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)), self.vision)
         tools = specs_for(self.profile.get("tools", []))
         est = estimate_tokens(payload) + (estimate_tokens([{"t": json.dumps(tools)}]) if tools else 0)
         self.usage.emit(est, self.n_ctx or 0, -1.0)
@@ -228,7 +229,7 @@ class Agent(QObject):
             return build_messages(
                 system, msgs, self.n_ctx, max_tokens,
                 int(s.get("keep_full_tool_results", 2)), int(s.get("old_tool_result_chars", 300)),
-                self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)))
+                self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)), self.vision)
 
         for step in range(int(s.get("max_steps", 15))):
             payload, dropped = payload_now()
@@ -308,6 +309,7 @@ class Agent(QObject):
             if self.stopped or not msg.get("tool_calls"):
                 return
 
+            pending_images = []
             for c in tool_calls:
                 name = c["function"]["name"]
                 if self.stopped:
@@ -340,6 +342,12 @@ class Agent(QObject):
                     tmsg["_diff"] = self.toolbox.last_diff      # nur Anzeige
                     self.toolbox.last_diff = ""
                 msgs.append(tmsg)
+                for att in self.toolbox.take_images():          # z. B. Screenshot-Werkzeug
+                    pending_images.append(att)
+                self._tick(force=True)
+            if pending_images:   # Bilder erst nach allen Werkzeug-Antworten (Reihenfolge der Rollen bleibt gültig)
+                msgs.append({"role": "user", "content": "[Bild vom Werkzeug, z. B. Screenshot]", "_auto": True,
+                             "_images": [a["path"] for a in pending_images], "_attachments": pending_images})
                 self._tick(force=True)
             self.info.emit("")
 

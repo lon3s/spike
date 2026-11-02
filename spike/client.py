@@ -32,6 +32,18 @@ def list_models(ep: dict) -> list[str]:
         return [m["id"] for m in json.load(r).get("data", [])]
 
 
+def has_vision(ep: dict) -> bool:
+    """llama.cpp meldet unter /props, ob das Modell Bilder versteht (mmproj geladen)."""
+    try:
+        with _open(server_root(ep["url"]) + "/props", ep.get("api_key", ""), timeout=5) as r:
+            d = json.load(r)
+        return bool((d.get("modalities") or {}).get("vision"))
+    except Exception:
+        # Andere Server (OpenAI usw.) melden das nicht – Modellname als Hinweis
+        m = (ep.get("model") or "").lower()
+        return any(k in m for k in ("gpt-4o", "gpt-4.1", "gpt-5", "vision", "-vl", "llava", "gemma-3"))
+
+
 def get_n_ctx(ep: dict) -> int | None:
     """llama.cpp liefert die Kontextgröße unter /props."""
     try:

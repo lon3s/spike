@@ -104,7 +104,39 @@ def content_widget(text, c):
     return w
 
 
-def user_bubble(text, c, compact, avail=MAX_W):
+def attachment_row(atts, c):
+    """Bilder als Vorschau, Dateien als Chips (unter der Nutzer-Nachricht)."""
+    from PySide6.QtGui import QPixmap, QDesktopServices
+    from PySide6.QtCore import QUrl
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(6)
+    for a in atts:
+        if a.get("kind") == "image":
+            pm = QPixmap(a["path"])
+            lb = QLabel()
+            if not pm.isNull():
+                lb.setPixmap(pm.scaled(220, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                lb.setText("🖼 (Bild fehlt)")
+            lb.setToolTip(f"{a.get('name')} – Doppelklick öffnet")
+            lb.setCursor(Qt.PointingHandCursor)
+            lb.mouseDoubleClickEvent = lambda e, p=a["path"]: QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+            lb.setStyleSheet(f"border: 1px solid {c['border']}; border-radius: 8px; padding: 2px;")
+            lay.addWidget(lb, 0, Qt.AlignTop)
+        else:
+            icon = "📕" if a.get("kind") == "pdf" else "📄"
+            lb = QLabel(f"{icon} {html.escape(a.get('name', ''))}")
+            lb.setObjectName("Chip")
+            lb.setToolTip(a.get("orig") or a.get("path", ""))
+            lb.setStyleSheet("padding: 4px 10px;")
+            lay.addWidget(lb, 0, Qt.AlignTop)
+    lay.addStretch(0)
+    return w
+
+
+def user_bubble(text, c, compact, avail=MAX_W, atts=None):
     row = QWidget()
     lay = QHBoxLayout(row)
     lay.setContentsMargins(0, 0, 0, 0)
@@ -125,6 +157,10 @@ def user_bubble(text, c, compact, avail=MAX_W):
             longest = max((fm.horizontalAdvance(l) for l in seg[1].splitlines()), default=0)
             lb.setMinimumWidth(min(int(longest * 1.04) + 10, maxw - 34))
             bl.addWidget(lb)
+    if atts:
+        bl.addWidget(attachment_row(atts, c))
+    if not text and not atts:
+        bl.addWidget(_label("…"))
     bubble.setMaximumWidth(maxw)
     bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
     shadow(bubble, c, blur=20, dy=3)
@@ -531,10 +567,13 @@ class ChatView(QScrollArea):
                 prev = r
                 continue
             if r == "user":
-                t = m.get("content") or ""
+                atts = m.get("_attachments") or []
+                t = m.get("_text", m.get("content") or "") if atts else (m.get("content") or "")
+                if m.get("_auto"):
+                    t = "📸 Screenshot für das Modell"
                 avail = max(240, self.viewport().width() - 60)
-                specs.append((("u", i, hash(t), theme, compact, avail // 40),
-                              lambda t=t, a=avail: user_bubble(t, c, compact, a)))
+                specs.append((("u", i, hash(t), len(atts), theme, compact, avail // 40),
+                              lambda t=t, a=avail, atts=atts: user_bubble(t, c, compact, a, atts)))
             elif r == "assistant":
                 if prev in (None, "user"):
                     specs.append((("lbl", i, theme), lambda: role_label("ASSISTENT")))

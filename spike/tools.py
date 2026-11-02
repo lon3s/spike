@@ -71,6 +71,9 @@ TOOL_SPECS = {
                       "name = Teil des Namens (Groß/klein egal) oder Muster wie *.srt.",
                       {"name": {"type": "string"},
                        "path": {"type": "string", "description": "optional: nur hier suchen"}}, ["name"]),
+    "screenshot": _fn("screenshot", "Macht ein Bildschirmfoto (ganzer Bildschirm oder aktives Fenster) und zeigt es "
+                      "dir als Bild. Nur nutzen, wenn du sehen musst, was auf dem Bildschirm ist.",
+                      {"window": {"type": "boolean", "description": "nur das aktive Fenster"}}),
     "python_run": _fn("python_run", "Führt Python-3-Code aus (Nutzer bestätigt) und gibt stdout/stderr zurück. "
                       "Für Rechnen, Daten auswerten, Dateien umwandeln. Ergebnisse mit print() ausgeben.",
                       {"code": {"type": "string"}}, ["code"]),
@@ -96,7 +99,7 @@ TOOL_LABELS = {
     "browser_read": "Browser: lesen", "browser_click": "Browser: klicken", "browser_type": "Browser: tippen",
     "browser_back": "Browser: zurück", "run_shell": "Shell-Befehl ⚠", "read_file": "Datei lesen",
     "list_dir": "Ordner auflisten", "find_files": "Dateien suchen", "edit_file": "Datei ändern (Diff) ⚠",
-    "grep": "In Dateien suchen (grep)", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
+    "grep": "In Dateien suchen (grep)", "screenshot": "Screenshot ansehen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
 }
@@ -364,6 +367,21 @@ class ToolBox:
         self.cwd = Path.home()        # merkt sich „cd“ zwischen Befehlen (Modell und !-Befehle)
         self.on_output = None         # fn(text) – Live-Ausgabe laufender Befehle
         self.last_diff = ""           # Diff der letzten Dateiänderung (Anzeige im Chat)
+        self.vision = False           # versteht das Modell Bilder?
+        self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
+
+    def take_images(self):
+        imgs, self._images = self._images, []
+        return imgs
+
+    def t_screenshot(self, window=False, confirm=None):
+        from . import attachments
+        if not self.vision:
+            return ("Das aktuelle Modell kann keine Bilder sehen – Screenshot nicht möglich. Sag dem Nutzer, "
+                    "dass dafür ein Modell mit Bildverständnis (Vision) nötig ist.")
+        att = attachments.screenshot(active_window=bool(window))
+        self._images.append(att)
+        return "Screenshot aufgenommen – das Bild folgt als nächste Nachricht."
         self._proc = None
 
     # --- Shell mit Live-Ausgabe ---

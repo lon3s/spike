@@ -105,6 +105,7 @@ DEFAULT_CONFIG = {
         "compact_at_percent": 70,                 # ab dieser Auslastung (vom nutzbaren Kontext)
         "compact_keep_percent": 30,               # so viel vom Ende bleibt wörtlich
         "python_timeout": 120,
+        "attach_max_chars": 30000,                # so viel Text pro angehängter Datei
         "drive_index": True,                      # Dateisuche: /mnt täglich im Hintergrund indizieren
     },
 }

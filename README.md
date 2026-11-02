@@ -31,6 +31,11 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
 - **Programmieren**: `read_file` mit Zeilennummern und Abschnitten, `edit_file` ersetzt gezielt Stellen (Freigabe zeigt
   einen farbigen Diff, danach steht die Änderung als Diff-Karte im Chat), `grep` (ripgrep) durchsucht Projekte.
   Relative Pfade gelten ab dem aktuellen Ordner (`!cd projekt`).
+- **Anhänge**: 📎, Drag & Drop oder Strg+V (Bilder aus der Zwischenablage). Text-/Code-Dateien und PDFs gehen als Text
+  ans Modell (max. 30 000 Zeichen pro Datei), Bilder als Bild – sofern der Server Bilder versteht (llama.cpp mit
+  `--mmproj`, erkannt über `/props`). Nur die letzten 3 Bilder eines Chats werden mitgeschickt.
+- **Screenshots**: `/screenshot [Frage]` blendet das Popup aus, fotografiert den Bildschirm (Spectacle) und hängt das
+  Bild an; das Modell kann mit dem Werkzeug `screenshot` auch selbst nachsehen.
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
@@ -124,6 +129,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/compact [Hinweis]` (`/compress`) | Verlauf jetzt zusammenfassen, macht Kontext frei |
 | `/kontext` | Kontext-Belegung anzeigen |
 | `/profil <Name>`, `/modell <Name>`, `/server <Name>` | wechseln (auch im Popup, wo die Kopfzeile fehlt) |
+| `/screenshot [Frage]` | Bildschirmfoto anhängen |
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/stop` | Antwort abbrechen |

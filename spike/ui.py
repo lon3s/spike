@@ -9,17 +9,17 @@ from PySide6.QtGui import (QAction, QColor, QConicalGradient, QDesktopServices, 
                            QPainterPath, QPen, QRegion)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QColorDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QColorDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
     QVBoxLayout, QWidget,
 )
 
 from . import config as C
 from .agent import Agent
-from .client import get_n_ctx, list_models
+from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .theme import THEMES, palette, qss
-from . import memory, plugins
+from . import attachments as A, memory, plugins
 from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
@@ -43,6 +43,16 @@ class InputBox(QPlainTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if want > 220 else Qt.ScrollBarAlwaysOff)
 
     key_hook = None     # fn(key) -> True, wenn die Taste verbraucht wurde (Befehlsliste)
+    attach_hook = None  # fn(mime) -> True, wenn Bild/Dateien als Anhang übernommen wurden
+
+    def canInsertFromMimeData(self, mime):
+        return mime.hasImage() or mime.hasUrls() or super().canInsertFromMimeData(mime)
+
+    def insertFromMimeData(self, mime):
+        if self.attach_hook and (mime.hasImage() or (mime.hasUrls() and all(u.isLocalFile() for u in mime.urls()))):
+            if self.attach_hook(mime):
+                return
+        super().insertFromMimeData(mime)
 
     def keyPressEvent(self, e):
         if self.key_hook and not (e.modifiers() & Qt.ShiftModifier) and self.key_hook(e.key()):
@@ -55,6 +65,7 @@ class InputBox(QPlainTextEdit):
 
 class Bridge(QObject):
     models_loaded = Signal(str, list, int, str)   # endpoint, models, n_ctx, error
+    screenshot_done = Signal(object, str)          # anhang (oder None), fehler
     shell_update = Signal()                       # !-Befehl: neue Ausgabe
     shell_done = Signal()
 
@@ -701,6 +712,10 @@ class MainWindow(QMainWindow):
         self.bridge.models_loaded.connect(self._models_loaded)
         self.bridge.shell_update.connect(self.redraw)
         self.bridge.shell_done.connect(self._shell_done)
+        self.bridge.screenshot_done.connect(self._screenshot_done)
+        self.vision = {}             # endpoint-name -> versteht Bilder?
+        self.attachments = []        # Anhänge für die nächste Nachricht
+        self.setAcceptDrops(True)
         self._shell_running = False
 
         # --- Seitenleiste ---
@@ -795,6 +810,11 @@ class MainWindow(QMainWindow):
         self.btn_pin.setChecked(bool(self.cfg["settings"].get("popup_pinned")))
         self.btn_pin.setVisible(popup)
         cl.addWidget(self.btn_pin, 0, Qt.AlignBottom)
+        self.btn_attach = _icon_btn("📎", "Datei oder Bild anhängen (auch per Drag & Drop oder Strg+V)\n"
+                                    "/screenshot macht ein Bildschirmfoto", self.pick_files)
+        self.btn_attach.setFixedSize(36, 36)
+        cl.addWidget(self.btn_attach, 0, Qt.AlignBottom)
+        self.input.attach_hook = self._attach_mime
         # alle Knöpfe in der Eingabeleiste gleich hoch wie das einzeilige Eingabefeld,
         # sonst wird die Leiste höher und der Senden-Knopf sitzt nicht mittig
         for b in (self.btn_compact, self.btn_pin):
@@ -840,7 +860,13 @@ class MainWindow(QMainWindow):
         crow = QVBoxLayout()
         crow.setContentsMargins(22, 6, 22, 8)
         crow.setSpacing(5)
-        for w_ in (self.cmd_list, composer, self.meta):
+        self.att_bar = QWidget()
+        self.att_bar.setMaximumWidth(ChatView.MAX_W)
+        self.att_row = QHBoxLayout(self.att_bar)
+        self.att_row.setContentsMargins(8, 0, 8, 0)
+        self.att_row.setSpacing(6)
+        self.att_bar.hide()
+        for w_ in (self.cmd_list, self.att_bar, composer, self.meta):
             h = QHBoxLayout()
             h.addStretch(1)
             h.addWidget(w_, 100)
@@ -998,6 +1024,7 @@ class MainWindow(QMainWindow):
         def job(ep=dict(ep)):
             try:
                 models = list_models(ep)
+                self.vision[ep["name"]] = has_vision(ep)
                 self.bridge.models_loaded.emit(ep["name"], models, get_n_ctx(ep) or 0, "")
             except Exception as e:
                 self.bridge.models_loaded.emit(ep["name"], [], 0, str(e))
@@ -1118,11 +1145,113 @@ class MainWindow(QMainWindow):
             self.new_chat()
 
     # --- Senden ---
+    # --- Anhänge ---
+    def _user_message(self, text):
+        if not self.attachments:
+            return {"role": "user", "content": text}
+        atts, self.attachments = self.attachments, []
+        self._show_attachments()
+        limit = int(self.cfg["settings"].get("attach_max_chars", 30000))
+        parts = [text] if text else []
+        for a in atts:
+            if a["kind"] in ("text", "pdf"):
+                parts.append(A.file_text(a, limit))
+        msg = {"role": "user", "content": "\n\n".join(parts) or "(siehe Bild)", "_text": text,
+               "_attachments": atts}
+        imgs = [a["path"] for a in atts if a["kind"] == "image"]
+        if imgs:
+            msg["_images"] = imgs
+        return msg
+
+    def add_attachment(self, att):
+        if len(self.attachments) >= 10:
+            self._info("Höchstens 10 Anhänge pro Nachricht")
+            return
+        self.attachments.append(att)
+        self._show_attachments()
+        if att["kind"] == "image" and not self.vision.get(self.cb_ep.currentText()):
+            self._info("⚠ Das aktuelle Modell kann keine Bilder sehen – es bekommt nur einen Hinweis aufs Bild")
+        self.input.setFocus()
+
+    def _show_attachments(self):
+        while self.att_row.count():
+            it = self.att_row.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for i, a in enumerate(self.attachments):
+            icon = {"image": "🖼", "pdf": "📕"}.get(a["kind"], "📄")
+            b = QPushButton(f"{icon} {a['name'][:28]}  ✕")
+            b.setObjectName("CopyBtn")
+            b.setToolTip(f"{a.get('orig') or a['path']}\n{A.human_size(a['size'])} – klicken zum Entfernen")
+            b.clicked.connect(lambda _=False, i=i: (self.attachments.pop(i), self._show_attachments()))
+            self.att_row.addWidget(b)
+        self.att_row.addStretch(1)
+        self.att_bar.setVisible(bool(self.attachments))
+
+    def pick_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Anhängen", str(self.toolbox.cwd))
+        for f in files:
+            self._attach_path(f)
+
+    def _attach_path(self, path):
+        try:
+            self.add_attachment(A.prepare(path))
+        except Exception as e:
+            self._info(f"⚠ {e}")
+
+    def _attach_mime(self, mime):
+        if mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()):
+            for u in mime.urls():
+                if u.isLocalFile():
+                    self._attach_path(u.toLocalFile())
+            return True
+        if mime.hasImage():
+            img = mime.imageData()
+            if img is not None and not img.isNull():
+                self.add_attachment(A.from_image(img, "Zwischenablage.png"))
+                return True
+        return False
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls() or e.mimeData().hasImage():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        if self._attach_mime(e.mimeData()):
+            e.acceptProposedAction()
+
+    def take_screenshot(self, question="", active_window=False):
+        """Popup kurz ausblenden, Bildschirmfoto machen, als Anhang übernehmen (und ggf. gleich fragen)."""
+        self._shot_question = question
+        self._shot_reshow = self.popup and self.isVisible()
+        if self._shot_reshow:
+            self.hide()
+
+        def job():
+            time.sleep(0.45 if self._shot_reshow else 0.1)
+            try:
+                self.bridge.screenshot_done.emit(A.screenshot(active_window), "")
+            except Exception as e:
+                self.bridge.screenshot_done.emit(None, str(e))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _screenshot_done(self, att, err):
+        if self._shot_reshow and self.ctrl and not self.isVisible():
+            self.ctrl.toggle_popup()
+        if err:
+            self._info(f"⚠ Screenshot: {err}")
+            return
+        self.add_attachment(att)
+        if self._shot_question:
+            self.input.setPlainText(self._shot_question)
+            self.send()
+
     def _new_agent(self):
         ep = self.endpoint()
         n_ctx = self.n_ctx.get(ep["name"]) or self.cfg["settings"]["default_n_ctx"]
         a = Agent(self.chat, ep, self.model_id(), self.profile(), self.cfg["settings"], self.toolbox, n_ctx)
         a.usage.connect(self._usage)
+        a.vision = self.toolbox.vision = bool(self.vision.get(ep["name"]))
         return a
 
     def _estimate(self):
@@ -1149,7 +1278,7 @@ class MainWindow(QMainWindow):
         if self._shell_running:
             self._info("Warte, bis der Terminal-Befehl fertig ist (Stopp bricht ab)")
             return
-        if not text or self.agent or self.chat is None:
+        if (not text and not self.attachments) or self.agent or self.chat is None:
             return
         ep = self.endpoint()
         if not ep:
@@ -1157,7 +1286,7 @@ class MainWindow(QMainWindow):
             return
         self._sync_chat_settings()
         self.input.clear()
-        self.chat["messages"].append({"role": "user", "content": text})
+        self.chat["messages"].append(self._user_message(text))
         if self.chat["title"] == "Neuer Chat":
             self.chat["title"] = text.replace("\n", " ")[:45]
             it = self.chat_list.currentItem()
@@ -1314,6 +1443,7 @@ class MainWindow(QMainWindow):
         ("/profil", ("/profile",), "<Name>", "Profil wechseln"),
         ("/modell", ("/model",), "<Name>", "Modell wechseln"),
         ("/server", ("/endpoint",), "<Name>", "Server wechseln"),
+        ("/screenshot", ("/bildschirm",), "[Frage]", "Bildschirmfoto anhängen (mit Frage: gleich senden)"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
@@ -1457,6 +1587,8 @@ class MainWindow(QMainWindow):
             self._sync_chat_settings()
             self._estimate()
             self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/screenshot":
+            self.take_screenshot(arg)
         elif name == "/denken":
             prof = self.profile()
             cur = prof.get("thinking", "standard")
