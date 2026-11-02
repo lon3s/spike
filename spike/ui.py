@@ -19,7 +19,7 @@ from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .theme import THEMES, palette, qss
-from . import attachments as A, memory, plugins, scheduler as S
+from . import attachments as A, mcp, memory, plugins, scheduler as S
 from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
@@ -300,6 +300,7 @@ class SettingsDialog(QDialog):
         self._show_plugins()
         tabs.addTab(gen, "Allgemein")
         tabs.addTab(self._memory_tab(s), "Gedächtnis && Kontext")
+        tabs.addTab(self._mcp_tab(s), "MCP-Server")
         tabs.addTab(self._glow_tab(s), "Popup-Rahmen")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -311,6 +312,64 @@ class SettingsDialog(QDialog):
 
         self._bridge = Bridge()
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _mcp_tab(self, s):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        intro = QLabel("MCP-Server sind fertige Werkzeug-Pakete (GitHub, Kalender, Datenbanken, Home Assistant …). "
+                       "Befehl eintragen, speichern – die Werkzeuge erscheinen dann in den Profilen "
+                       "(im Profil „Alles“ automatisch). Beispiele: <code>uvx mcp-server-time</code>, "
+                       "<code>npx -y @modelcontextprotocol/server-filesystem ~/Dokumente</code>")
+        intro.setWordWrap(True)
+        intro.setTextFormat(Qt.RichText)
+        lay.addWidget(intro)
+        s.setdefault("mcp_servers", [])
+
+        def form(fw, changed):
+            f, fields = QFormLayout(fw), {}
+            _line(f, "name", "Name", changed, fields)
+            cmd = _line(f, "command", "Befehl", changed, fields)
+            cmd.setPlaceholderText("z. B. uvx mcp-server-time")
+            env = QPlainTextEdit()
+            env.setPlaceholderText("Umgebungsvariablen, eine pro Zeile: GITHUB_TOKEN=…")
+            env.setMaximumHeight(80)
+            env.textChanged.connect(changed)
+            f.addRow("Umgebung", env)
+
+            def get_env():
+                out = {}
+                for line in env.toPlainText().splitlines():
+                    k, sep, v = line.partition("=")
+                    if sep and k.strip():
+                        out[k.strip()] = v.strip()
+                return out
+            fields["env"] = (env, get_env, lambda v: env.setPlainText("\n".join(f"{k}={x}" for k, x in (v or {}).items())))
+            en = QCheckBox("aktiv")
+            en.toggled.connect(changed)
+            f.addRow(en)
+            fields["enabled"] = (en, en.isChecked, lambda v: en.setChecked(v is None or bool(v)))
+            cf = QComboBox()
+            cf.addItem("Nur bei Werkzeugen, die etwas ändern (empfohlen)", "schreibend")
+            cf.addItem("Immer nachfragen", "immer")
+            cf.addItem("Nie nachfragen", "nie")
+            cf.currentIndexChanged.connect(changed)
+            f.addRow("Freigabe", cf)
+            fields["confirm"] = (cf, cf.currentData, lambda v: cf.setCurrentIndex(max(0, cf.findData(v or "schreibend"))))
+            return fields
+        self.mcp_editor = ListEditor(s["mcp_servers"], lambda: {"name": "neu", "command": "", "env": {},
+                                                                 "enabled": True, "confirm": "schreibend"}, form)
+        lay.addWidget(self.mcp_editor, 1)
+        self.mcp_status = QLabel()
+        self.mcp_status.setWordWrap(True)
+        self.mcp_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.mcp_status)
+        upd = lambda: self.mcp_status.setText("Status: " + (" · ".join(f"{k}: {v}" for k, v in mcp.STATUS.items())
+                                                            or "noch keine Server"))
+        upd()
+        t = QTimer(w)
+        t.timeout.connect(upd)
+        t.start(1000)
+        return w
 
     def _memory_tab(self, s):
         w = QWidget()
@@ -693,6 +752,7 @@ def _icon_btn(text, tip, slot):
 
 _INDEX_TIMER = None
 _SCHED_TIMER = None
+_MCP_STARTED = False
 
 
 class MainWindow(QMainWindow):
@@ -927,6 +987,12 @@ class MainWindow(QMainWindow):
             _INDEX_TIMER.start()
             QTimer.singleShot(20_000, check)     # nicht direkt beim Anmelden
         # Erinnerungen/Aufgaben: alle 15 s prüfen (nur ein Timer; ausgeführt vom ersten Fenster)
+        global _MCP_STARTED
+        if not _MCP_STARTED:
+            _MCP_STARTED = True
+            mcp.start_all(self.cfg["settings"].get("mcp_servers"))
+            import atexit
+            atexit.register(mcp.stop_all)
         global _SCHED_TIMER
         if _SCHED_TIMER is None:
             _SCHED_TIMER = QTimer(QApplication.instance())
@@ -1744,9 +1810,13 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec():
             new = dlg.result_config()
+            mcp_changed = new["settings"].get("mcp_servers") != self.cfg["settings"].get("mcp_servers")
             self.cfg["endpoints"], self.cfg["profiles"] = new["endpoints"], new["profiles"]
             self.cfg["settings"].update(new["settings"])   # gleiches dict, ToolBox sieht Änderungen
             C.save_config(self.cfg)
+            if mcp_changed:
+                mcp.start_all(self.cfg["settings"].get("mcp_servers"))
+                self._info("MCP-Server werden neu gestartet …")
             self.config_changed()
             if self.ctrl:     # anderes Fenster (Popup ↔ großes Fenster) mitziehen
                 for w in (self.ctrl.main, self.ctrl.popup):

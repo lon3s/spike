@@ -106,6 +106,8 @@ DEFAULT_CONFIG = {
         "compact_keep_percent": 30,               # so viel vom Ende bleibt wörtlich
         "python_timeout": 120,
         "attach_max_chars": 30000,                # so viel Text pro angehängter Datei
+        # MCP-Server: [{"name", "command", "env": {}, "enabled": true, "confirm": "schreibend"|"immer"|"nie"}]
+        "mcp_servers": [],
         "drive_index": True,                      # Dateisuche: /mnt täglich im Hintergrund indizieren
     },
 }

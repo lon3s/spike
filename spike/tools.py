@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 
-from . import memory, plugins
+from . import mcp, memory, plugins
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
@@ -383,6 +383,16 @@ class ToolBox:
         self.vision = False           # versteht das Modell Bilder?
         self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
 
+    def _mcp_image(self, b64, mime):
+        import base64
+        from . import attachments
+        attachments.ATT_DIR.mkdir(parents=True, exist_ok=True)
+        ext = ".png" if "png" in mime else ".jpg"
+        f = attachments.ATT_DIR / f"mcp-{len(self._images)}-{os.getpid()}-{__import__('time').time():.0f}{ext}"
+        f.write_bytes(base64.b64decode(b64))
+        if self.vision:
+            self._images.append({"name": f.name, "path": str(f), "orig": "", "kind": "image", "size": f.stat().st_size})
+
     def take_images(self):
         imgs, self._images = self._images, []
         return imgs
@@ -463,6 +473,9 @@ class ToolBox:
         try:
             if name in plugins.PLUGINS:
                 return clip(plugins.call(name, args, self, confirm), self.limit)
+            if name in mcp.TOOLS:
+                return clip_tail(mcp.call(name, args, confirm, self.settings.get("mcp_servers"),
+                                          on_image=self._mcp_image), self.limit)
             fn = getattr(self, "t_" + name, None)
             if not fn:
                 return f"Fehler: unbekanntes Werkzeug '{name}'"
@@ -853,7 +866,7 @@ class ToolBox:
 def expand(names):
     """"*" steht für alle Werkzeuge inkl. Plugins (auch später hinzugefügte)."""
     if "*" in (names or []):
-        return list(TOOL_SPECS) + list(plugins.PLUGINS)
+        return list(TOOL_SPECS) + list(plugins.PLUGINS) + list(mcp.TOOLS)
     return list(names or [])
 
 
@@ -864,13 +877,16 @@ def specs_for(names):
             out.append(TOOL_SPECS[n])
         elif n in plugins.PLUGINS:
             out.append(plugins.PLUGINS[n]["spec"])
+        elif n in mcp.TOOLS:
+            out.append(mcp.TOOLS[n]["spec"])
     return out
 
 
 def all_tools():
     """[(name, anzeigename)] – eingebaute Werkzeuge und geladene Plugins."""
     return [(n, TOOL_LABELS.get(n, n)) for n in TOOL_SPECS] + \
-           [(n, p["label"]) for n, p in plugins.PLUGINS.items()]
+           [(n, p["label"]) for n, p in plugins.PLUGINS.items()] + \
+           [(n, t["label"]) for n, t in mcp.TOOLS.items()]
 
 
 def load_plugins():

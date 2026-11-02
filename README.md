@@ -41,6 +41,10 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   bestätigt werden müsste, wird automatisch abgelehnt) und meldet das Ergebnis; „Öffnen“ zeigt den Chat.
   Wiederholung: täglich, werktags, wöchentlich, stündlich, alle N min. Läuft, solange spike läuft (Tray);
   Verpasstes wird beim nächsten Start nachgeholt. `/aufgaben` zeigt alles Geplante.
+- **MCP-Server** (⚙ → MCP-Server): fertige Werkzeug-Pakete per Befehl einbinden, z. B. `uvx mcp-server-time` oder
+  `npx -y @modelcontextprotocol/server-filesystem ~/Dokumente`. Ihre Werkzeuge heißen `mcp_<server>_<werkzeug>` und sind
+  im Profil „Alles“ automatisch dabei. Freigabe: standardmäßig nur bei Werkzeugen, die etwas ändern (readOnlyHint).
+  Achtung: Große Server (z. B. GitHub mit ~40 Werkzeugen) kosten viel Kontext – dann lieber ein eigenes Profil.
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
