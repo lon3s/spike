@@ -179,6 +179,54 @@ def speakable(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+PIPER_DIR = DATA_DIR / "piper"
+
+
+def piper_bin(settings=None) -> str:
+    """piper-Programm: im spike-venv (pip install piper-tts), sonst im PATH."""
+    for cand in (Path(sys.executable).with_name("piper"), Path(sys.prefix) / "bin" / "piper"):
+        if cand.exists():
+            return str(cand)
+    return shutil.which("piper") or ""
+
+
+def piper_model(settings) -> str:
+    m = (settings.get("piper_model") or "").strip()
+    if m:
+        return os.path.expanduser(m)
+    found = sorted(PIPER_DIR.glob("*.onnx")) if PIPER_DIR.is_dir() else []
+    de = [f for f in found if f.name.startswith("de_")]
+    return str((de or found)[0]) if (de or found) else ""
+
+
+def piper_ready(settings) -> bool:
+    return bool(piper_bin(settings) and piper_model(settings) and Path(piper_model(settings)).exists())
+
+
+def server_pid(url) -> int | None:
+    """PID des Prozesses, der auf dem Port der TTS-URL lauscht."""
+    port = urllib.parse.urlparse(url).port or 80
+    try:
+        out = subprocess.run(["ss", "-ltnpH", f"sport = :{port}"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"pid=(\d+)", out)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def server_on_cpu(pid) -> bool:
+    """True, wenn der Server-Prozess keine GPU nutzt (von spike mit CUDA_VISIBLE_DEVICES= gestartet)."""
+    try:
+        env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        if b"CUDA_VISIBLE_DEVICES=" in env:
+            return True
+        r = subprocess.run(["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=10)
+        return str(pid) not in r.stdout.split()
+    except Exception:
+        return False
+
+
 def gpu_free_mb() -> int:
     """Größter freier GPU-Speicher in MB (0 = keine NVIDIA-GPU oder alles voll)."""
     if not shutil.which("nvidia-smi"):
@@ -282,7 +330,38 @@ class Speaker:
             time.sleep(0.5)
         raise RuntimeError("Vorlese-Server antwortet nicht")
 
+    def _choose_engine(self, url):
+        """'voxcpm' oder 'piper' – auto: VoxCPM wenn es schon (auf der GPU) läuft oder die GPU frei ist."""
+        eng = self.settings.get("tts_engine", "auto")
+        if eng in ("voxcpm", "piper"):
+            return eng
+        pid = server_pid(url) if self._server_up(url) else None
+        on_cpu = bool(pid) and server_on_cpu(pid)
+        if pid and not on_cpu:
+            return "voxcpm"                          # läuft schon auf der GPU
+        if gpu_free_mb() >= int(self.settings.get("tts_min_vram_mb", 6000)):
+            return "voxcpm"
+        if piper_ready(self.settings):
+            if on_cpu:                               # langsamen CPU-Server beenden (gibt ~5 GB RAM frei)
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except Exception:
+                    pass
+                self._started_server = None
+            return "piper"
+        return "voxcpm"                              # ohne Piper: VoxCPM auf der CPU (langsam)
+
+    def _synth_piper(self, text):
+        f = Path(tempfile.gettempdir()) / f"spike-tts-{uuid.uuid4().hex[:8]}.wav"
+        r = subprocess.run([piper_bin(self.settings), "-m", piper_model(self.settings), "-f", str(f)],
+                           input=text, text=True, capture_output=True, timeout=120)
+        if not f.exists() or f.stat().st_size < 100:
+            raise RuntimeError(f"Piper: {(r.stderr or '').strip()[-300:] or 'keine Ausgabe'}")
+        return f
+
     def _synth(self, url, text):
+        if getattr(self, "engine", "voxcpm") == "piper":
+            return self._synth_piper(text)
         data = urllib.parse.urlencode({"text": text, "voice": self.settings.get("tts_voice", "senol1"),
                                        "language": self.settings.get("tts_language", "de")}).encode()
         with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=300) as r:
@@ -296,12 +375,14 @@ class Speaker:
     def _run(self, text, stop):
         url = self.settings.get("tts_url") or "http://127.0.0.1:8000/tts"
         try:
-            if not self._ensure_server(url, stop):
+            self.engine = self._choose_engine(url)
+            if self.engine == "voxcpm" and not self._ensure_server(url, stop):
                 return
             parts = chunks(speakable(text))
             if not parts:
                 return
-            slow = " (CPU, dauert)" if getattr(self, "cpu_mode", False) else ""
+            slow = " (Piper)" if self.engine == "piper" else \
+                " (CPU, dauert)" if getattr(self, "cpu_mode", False) else ""
             self.on_state(f"🔊 Erzeuge Sprache …{slow}")
             nxt = self._synth(url, parts[0])
             for i in range(len(parts)):

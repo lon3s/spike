@@ -49,6 +49,17 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   pyvideotrans; GPU wenn frei, sonst CPU; oder ein OpenAI-kompatibler Server). 🔊 unter der Antwort bzw. `/vorlesen`
   liest mit der VoxCPM-API vor (Stimme `senol1`), satzweise; spike startet die API bei Bedarf selbst
   (⚙ → Sprache → Startbefehl). `/stop` beendet das Vorlesen.
+  Automatische Wahl: GPU frei (≥ 6 GB) oder VoxCPM läuft schon auf der GPU → VoxCPM; GPU voll → **Piper**
+  (schnell auch auf der CPU, ~0,3× Echtzeit). VoxCPM auf der CPU wäre ~5× Echtzeit.
+
+### Piper installieren (schnelle Stimme ohne GPU)
+
+```bash
+~/spike/.venv/bin/pip install piper-tts          # oder: yay -S piper-tts-bin
+mkdir -p ~/.local/share/spike/piper && cd ~/.local/share/spike/piper
+curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx
+curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json
+```
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).

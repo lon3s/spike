@@ -114,6 +114,8 @@ DEFAULT_CONFIG = {
         "tts_url": "http://127.0.0.1:8000/tts", "tts_voice": "senol1", "tts_language": "de",
         "tts_start": "cd ~/voxcpm-tts && ./.venv/bin/python api.py", "tts_auto": False,
         "tts_device": "auto", "tts_min_vram_mb": 6000,      # auto: GPU wenn so viel frei, sonst CPU
+        "tts_engine": "auto",                     # auto: VoxCPM wenn GPU frei, sonst Piper; oder voxcpm/piper
+        "piper_model": "",                        # leer = erstes *.onnx in ~/.local/share/spike/piper
         "drive_index": True,                      # Dateisuche: /mnt täglich im Hintergrund indizieren
     },
 }

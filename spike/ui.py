@@ -1,5 +1,6 @@
 """Qt-Oberfläche."""
 import copy
+from pathlib import Path
 import re
 import threading
 import time
@@ -354,6 +355,22 @@ class SettingsDialog(QDialog):
         tdev.setCurrentIndex(max(0, tdev.findData(s.get("tts_device", "auto"))))
         f.addRow("Rechnen auf", tdev)
         self.sp_fields["tts_device"] = tdev.currentData
+        eng = QComboBox()
+        eng.addItem("auto – VoxCPM wenn GPU frei, sonst Piper", "auto")
+        eng.addItem("immer VoxCPM (deine Stimme)", "voxcpm")
+        eng.addItem("immer Piper (schnell, auch auf der CPU)", "piper")
+        eng.setCurrentIndex(max(0, eng.findData(s.get("tts_engine", "auto"))))
+        f.addRow("Stimme verwenden", eng)
+        self.sp_fields["tts_engine"] = eng.currentData
+        pm = speech.piper_model(s)
+        line("piper_model", "Piper-Stimme (.onnx)",
+             f"leer = automatisch ({pm or 'keine gefunden in ' + str(speech.PIPER_DIR)})")
+        ok = speech.piper_ready(s)
+        st = QLabel(("✅ Piper bereit: " + Path(pm).name) if ok else
+                    "Piper fehlt: siehe README → „Piper installieren“" if not speech.piper_bin(s) else
+                    f"Piper-Programm da, aber keine Stimme in {speech.PIPER_DIR}")
+        st.setObjectName("Muted")
+        f.addRow("", st)
         ta = QCheckBox("Antworten automatisch vorlesen")
         ta.setChecked(bool(s.get("tts_auto")))
         f.addRow(ta)
