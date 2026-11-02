@@ -25,6 +25,9 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   begrenzter Auszug in den Prompt (Standard 1500 Zeichen): angeheftete Einträge, dann die zur ersten Nachricht passenden,
   dann die neuesten. Den Rest sucht das Modell bei Bedarf mit `memory_search`. Der Auszug bleibt pro Chat gleich,
   damit der Prompt-Cache von llama.cpp greift. Einträge verwalten: ⚙ → Gedächtnis & Kontext.
+- **Dateisuche** (`find_files`, ohne Bestätigung): Systemindex (`plocate`), frische Suche im Home-Ordner (`fd`) und ein
+  eigener Index für `/mnt` (NAS, Laufwerke) in `~/.cache/spike/mnt.db`. spike erneuert ihn täglich im Hintergrund
+  (niedrigste Priorität, abschaltbar unter ⚙ → Allgemein, sofort mit `/index`). Suche dauert so ~0,1 s.
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
@@ -108,6 +111,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/stop` | Antwort abbrechen |
 | `/gross` | Chat im großen Fenster öffnen |
 | `/einstellungen` | Einstellungen |
+| `/index` | Laufwerks-Index für die Dateisuche erneuern |
 | `/quit` (`/beenden`) | spike beenden |
 | `/hilfe` | alle Befehle |
 

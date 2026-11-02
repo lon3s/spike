@@ -52,6 +52,13 @@ TOOL_SPECS = {
     "list_dir": _fn("list_dir", "Listet ein Verzeichnis auf.", {"path": {"type": "string"}}, ["path"]),
     "write_file": _fn("write_file", "Schreibt eine Textdatei (Nutzer muss bestätigen).",
                       {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    "find_files": _fn("find_files", "Sucht Dateien/Ordner nach Namen auf dem PC (schnell, ohne Bestätigung). "
+                      "Ohne path: Systemindex + Home-Ordner, und wenn dort nichts ist, automatisch alle Laufwerke "
+                      "(/mnt, USB) – ein Aufruf genügt. "
+                      "Mit path (z. B. /mnt/nas_storage): sucht frisch nur dort. "
+                      "name = Teil des Namens (Groß/klein egal) oder Muster wie *.srt.",
+                      {"name": {"type": "string"},
+                       "path": {"type": "string", "description": "optional: nur hier suchen"}}, ["name"]),
     "python_run": _fn("python_run", "Führt Python-3-Code aus (Nutzer bestätigt) und gibt stdout/stderr zurück. "
                       "Für Rechnen, Daten auswerten, Dateien umwandeln. Ergebnisse mit print() ausgeben.",
                       {"code": {"type": "string"}}, ["code"]),
@@ -76,7 +83,7 @@ TOOL_LABELS = {
     "web_search": "Websuche", "fetch_url": "Seite laden (schnell)", "browser_open": "Browser: öffnen",
     "browser_read": "Browser: lesen", "browser_click": "Browser: klicken", "browser_type": "Browser: tippen",
     "browser_back": "Browser: zurück", "run_shell": "Shell-Befehl ⚠", "read_file": "Datei lesen",
-    "list_dir": "Ordner auflisten", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
+    "list_dir": "Ordner auflisten", "find_files": "Dateien suchen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
 }
@@ -245,6 +252,58 @@ class Browser:
         self.ex.shutdown(wait=False)
 
 
+# ---------- Laufwerks-Index (plocate-Datenbank für /mnt, ohne root) ----------
+
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "spike"
+DRIVE_INDEX = CACHE_DIR / "mnt.db"
+DRIVE_ROOT = "/mnt"
+_index_lock = __import__("threading").Lock()
+
+
+def drive_index_age() -> float | None:
+    """Alter des Index in Stunden (None = gibt es nicht)."""
+    try:
+        import time as _t
+        return (_t.time() - DRIVE_INDEX.stat().st_mtime) / 3600
+    except OSError:
+        return None
+
+
+def refresh_drive_index(max_age_h=24, wait=False) -> str:
+    """Erneuert den Index im Hintergrund (niedrige Priorität), wenn er älter als max_age_h ist."""
+    age = drive_index_age()
+    if age is not None and age < max_age_h:
+        return f"Index ist aktuell ({age:.1f} h alt)."
+    if not shutil.which("updatedb") or not Path(DRIVE_ROOT).is_dir():
+        return "updatedb oder /mnt fehlt – kein Laufwerks-Index."
+    if not _index_lock.acquire(blocking=False):
+        return "Index wird gerade schon erstellt."
+
+    def job():
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = DRIVE_INDEX.with_suffix(".tmp")
+            cmd = ["updatedb", "-l", "no", "-U", DRIVE_ROOT, "-o", str(tmp), "--prunefs", "", "--prunepaths", "",
+                   "--prunenames", ".snapshots .git node_modules .cache"]
+            if shutil.which("ionice"):
+                cmd = ["ionice", "-c3"] + cmd
+            cmd = ["nice", "-n", "19"] + cmd
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 3600)
+            if p.returncode == 0 and tmp.exists():
+                tmp.replace(DRIVE_INDEX)
+            else:
+                print("Laufwerks-Index fehlgeschlagen:", p.stderr[-500:])
+        except Exception as e:
+            print("Laufwerks-Index fehlgeschlagen:", e)
+        finally:
+            _index_lock.release()
+    if wait:
+        job()
+        return "Index erstellt."
+    __import__("threading").Thread(target=job, daemon=True, name="drive-index").start()
+    return "Index wird im Hintergrund erstellt."
+
+
 # ---------- Werkzeugkasten ----------
 
 class ToolBox:
@@ -326,6 +385,133 @@ class ToolBox:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, "utf-8")
         return f"Geschrieben: {p} ({len(content)} Zeichen)"
+
+    # --- Dateisuche ---
+    SKIP_PARTS = ("/.snapshots/", "/proc/", "/sys/", "/.git/", "/__pycache__/", "/.cache/", "/node_modules/",
+                  "/.local/share/Trash/")
+
+    def t_find_files(self, name, path="", confirm=None):
+        name = (name or "").strip()
+        if not name:
+            return "Fehler: name fehlt."
+        glob = any(ch in name for ch in "*?[")
+        found, notes, seen = [], [], set()
+
+        def add(lines):
+            for line in lines:
+                line = line.strip()
+                if not line or line in seen or any(x in line + "/" for x in self.SKIP_PARTS):
+                    continue
+                seen.add(line)
+                found.append(line)
+
+        def run_fd(root, limit, timeout):
+            if not shutil.which("fd"):
+                return []
+            args = ["fd", "-H", "-i", "--max-results", str(limit), "-E", ".snapshots", "-E", ".git",
+                    "-E", "node_modules", "-E", ".cache"]
+            args += ["--glob", name] if glob else ["-F", name]
+            try:
+                p = subprocess.run(args + [str(root)], capture_output=True, text=True, timeout=timeout)
+                return p.stdout.splitlines()
+            except subprocess.TimeoutExpired as e:
+                notes.append(f"Suche in {root} nach {timeout} s abgebrochen (Teilergebnis).")
+                out = e.stdout or b""
+                return (out.decode("utf-8", "replace") if isinstance(out, bytes) else out).splitlines()
+
+        if path:
+            root = Path(path).expanduser()
+            if not root.exists():
+                return f"Fehler: {root} gibt es nicht."
+            add(run_fd(root, 300, 40))
+            src = f"frische Suche in {root}"
+        else:
+            has_index = DRIVE_INDEX.exists()
+            if shutil.which("plocate"):
+                dbs = [[]] + ([["-d", str(DRIVE_INDEX)]] if has_index else [])
+                for db in dbs:
+                    try:
+                        p = subprocess.run(["plocate", *db, "-i", "-b", "-l", "400", name], capture_output=True,
+                                           text=True, timeout=15)
+                        add(l for l in p.stdout.splitlines() if os.path.lexists(l))   # Index kann veraltet sein
+                    except subprocess.TimeoutExpired:
+                        notes.append("plocate antwortete nicht.")
+            add(run_fd(Path.home(), 200, 20))
+            src = "Systemindex + Home-Ordner"
+            if has_index:
+                age = drive_index_age() or 0
+                src += f" + Laufwerks-Index /mnt (Stand vor {age:.0f} h; ganz neue Dateien dort ggf. mit path suchen)"
+            usb = Path("/run/media") / os.environ.get("USER", "")
+            if usb.is_dir():
+                for d in usb.iterdir():
+                    add(run_fd(d, 100, 15))
+
+        if not found and not path and not DRIVE_INDEX.exists():
+            # Nichts im Index/Home → alle weiteren Laufwerke (/mnt, USB) gleichzeitig durchsuchen
+            drives = [d for base in (Path("/mnt"), Path("/run/media") / os.environ.get("USER", ""))
+                      if base.is_dir() for d in sorted(base.iterdir()) if d.is_dir()][:10]
+            if drives and shutil.which("fd"):
+                self._search_drives(drives, name, glob, add, notes)
+                src += " + Laufwerke " + ", ".join(str(d) for d in drives)
+        if not found:
+            return f"Nichts gefunden für „{name}“ ({src})." + (" " + " ".join(notes) if notes else "")
+
+        base = name.lower().strip("*")
+        def rank(pth):
+            b = os.path.basename(pth.rstrip("/")).lower()
+            return (b != name.lower(), not b.startswith(base), pth.count("/"), len(pth))
+        found.sort(key=rank)
+        shown = []
+        for pth in found[:40]:
+            try:
+                st = os.stat(pth)
+                if os.path.isdir(pth):
+                    info = "Ordner"
+                else:
+                    size = st.st_size
+                    unit = next(u for u, lim in (("B", 1 << 10), ("KB", 1 << 20), ("MB", 1 << 30), ("GB", 1 << 62))
+                                if size < lim)
+                    div = {"B": 1, "KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30}[unit]
+                    info = f"{size / div:.0f} {unit}" if unit != "B" else f"{size} B"
+                info += ", " + __import__("time").strftime("%d.%m.%Y", __import__("time").localtime(st.st_mtime))
+            except OSError:
+                info = "?"
+            shown.append(f"{pth}  ({info})")
+        head = f"{len(found)} Treffer ({src})" + (f", die ersten {len(shown)}:" if len(found) > len(shown) else ":")
+        return clip("\n".join([head] + shown + notes), self.limit)
+
+    def _search_drives(self, drives, name, glob, add, notes):
+        """fd auf allen Laufwerken gleichzeitig. Sobald es Treffer gibt, noch kurz auf die anderen warten,
+        dann abbrechen – große Laufwerke sollen eine gefundene Datei nicht aufhalten."""
+        import time as _t
+        args = ["fd", "-H", "-i", "--max-results", "100", "-E", ".snapshots", "-E", ".git", "-E", "node_modules"]
+        args += ["--glob", name] if glob else ["-F", name]
+        procs = {d: subprocess.Popen(args + [str(d)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                 for d in drives}
+        start = _t.monotonic()
+        deadline = start + int(self.settings.get("find_drive_timeout", 45))
+        grace = None
+        try:
+            while procs:
+                for d, p in list(procs.items()):
+                    if p.poll() is not None:
+                        lines = p.stdout.read().splitlines()
+                        add(lines)
+                        if lines and grace is None:
+                            grace = _t.monotonic() + 3
+                        del procs[d]
+                now = _t.monotonic()
+                if procs and now > min(deadline, grace or deadline):
+                    break
+                _t.sleep(0.1)
+        finally:
+            for p in procs.values():
+                p.kill()
+                p.wait()
+        if procs:
+            notes.append("Nicht fertig durchsucht (sehr groß, nach "
+                         f"{_t.monotonic() - start:.0f} s abgebrochen): " + ", ".join(str(d) for d in procs) +
+                         " – bei Bedarf mit path gezielt dort suchen.")
 
     # --- Python ---
     def t_python_run(self, code, confirm=None):

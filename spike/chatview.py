@@ -1,6 +1,7 @@
 """Chatverlauf aus echten Widgets: runde Blasen, Code-Karten mit Kopieren-Knopf, Schatten."""
 import html
 import re
+import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase
@@ -149,6 +150,76 @@ def tool_chip(call, result, c):
     return chip
 
 
+class LiveText(QLabel):
+    """Live-Text, der gleichmäßig fließt statt in Schüben zu springen.
+
+    Der Server liefert Tokens in Paketen, die Oberfläche bekommt sie alle ~60 ms. Dieses Label merkt sich,
+    wann wie viel Text ankam, und zeigt ihn mit kleiner fester Verzögerung (LAG) so an, dass die Zeichen
+    zwischen zwei Paketen gleichmäßig verteilt erscheinen (~60 Bilder/s). Ergebnis: konstantes Tempo,
+    kein Stocken und kein Pulsieren. Ist der Rückstand zu groß, wird er sanft aufgeholt.
+    """
+    FRAME_MS = 16
+    LAG = 0.35           # Sekunden hinter dem Server
+    MAX_BACKLOG = 300    # Zeichen – mehr Rückstand wird aufgeholt
+
+    def __init__(self, render, obj=None):
+        super().__init__()
+        self.render = render          # fn(text, done) -> html
+        self.target = ""
+        self.shown = 0.0
+        self._drawn = -1
+        self.arrivals = [(time.monotonic(), 0)]
+        self.setTextFormat(Qt.RichText)
+        self.setWordWrap(True)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        if obj:
+            self.setObjectName(obj)
+        self.timer = QTimer(self)
+        self.timer.setTimerType(Qt.PreciseTimer)
+        self.timer.setInterval(self.FRAME_MS)
+        self.timer.timeout.connect(self._step)
+
+    def set_target(self, text):
+        if text == self.target:
+            return
+        now = time.monotonic()
+        if not text.startswith(self.target[:int(self.shown)]):
+            self.shown, self.arrivals = 0.0, [(now, 0)]    # Text ersetzt → von vorn
+        self.target = text
+        self.arrivals.append((now, len(text)))
+        self.arrivals = self.arrivals[-50:]
+        if not self.timer.isActive():
+            self.timer.start()
+
+    def _curve(self, tau):
+        """Wie viele Zeichen zum Zeitpunkt tau angezeigt werden sollen (linear zwischen den Paketen)."""
+        arr = self.arrivals
+        if tau <= arr[0][0]:
+            return arr[0][1]
+        for (t0, n0), (t1, n1) in zip(arr, arr[1:]):
+            if tau <= t1:
+                return n0 + (n1 - n0) * (tau - t0) / max(1e-6, t1 - t0)
+        return arr[-1][1]
+
+    def _step(self):
+        total = len(self.target)
+        if self.shown >= total:
+            self.timer.stop()
+            return
+        want = self._curve(time.monotonic() - self.LAG)
+        if total - want > self.MAX_BACKLOG:            # zu weit hinten → zügig, aber weich aufholen
+            want = max(want, self.shown + (total - self.MAX_BACKLOG - self.shown) / 8)
+        self.shown = min(total, max(self.shown, want))
+        n = int(self.shown)
+        if n == self._drawn:
+            return
+        if total > 6000 and n < total and n - self._drawn < 12:
+            return                    # sehr lange Texte seltener neu setzen (Markdown kostet Zeit)
+        self._drawn = n
+        self.setText(self.render(self.target[:n], n >= total))
+
+
 def reasoning_label(text, tail=False):
     t = text.strip()
     t = ("… " + t[-400:]) if tail and len(t) > 400 else (t[:300] + " …" if len(t) > 300 else t)
@@ -216,6 +287,7 @@ class ChatView(QScrollArea):
         self.viewport().setAutoFillBackground(False)
         inner.setAutoFillBackground(False)
         self.blocks = []        # [(key, widget)]
+        self.live_widgets = {}  # "rs"/"ct" -> LiveText (bleibt während des Streamens bestehen)
         self._stick = True
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
@@ -270,12 +342,24 @@ class ChatView(QScrollArea):
                 specs.append((("lbl-live", theme), lambda: role_label("ASSISTENT")))
             rs, ct = live.get("reasoning") or "", live.get("content") or ""
             if rs:
-                specs.append((("lr", len(rs), theme), lambda: reasoning_label(rs, tail=True)))
+                specs.append((("lr", theme), lambda: self._make_live("rs", c)))
             if ct:
-                specs.append((("lc", len(ct), theme), lambda: content_widget(ct + " ▍", c)))
+                specs.append((("lc", theme), lambda: self._make_live("ct", c)))
             if not rs and not ct:
                 specs.append((("dots", theme), lambda: _label(f'<span style="color:{c["muted"]}">● ● ●</span>')))
         return specs
+
+    def _make_live(self, kind, c):
+        if kind == "rs":
+            def render(t, done):
+                t = t.strip()
+                t = ("… " + t[-400:]) if len(t) > 400 else t
+                return f"💭 <i>{html.escape(t)}</i>"
+            w = LiveText(render, obj="Reasoning")
+        else:
+            w = LiveText(lambda t, done: md_html(t + ("" if done else " ▍") if t else "▍", c["code"]))
+        self.live_widgets[kind] = w
+        return w
 
     def render(self, messages, live, c, compact=False, summary_at=0, summary=""):
         specs = self._specs(messages, live, c, compact, summary_at, summary)
@@ -292,6 +376,13 @@ class ChatView(QScrollArea):
             self.col.insertWidget(self.col.count() - 1, w)   # vor dem Stretch
             self.blocks.append((key, w))
         self.setUpdatesEnabled(True)
+        alive = {id(w) for _, w in self.blocks}
+        self.live_widgets = {k: w for k, w in self.live_widgets.items() if id(w) in alive}
+        if live is not None:
+            if "rs" in self.live_widgets:
+                self.live_widgets["rs"].set_target(live.get("reasoning") or "")
+            if "ct" in self.live_widgets:
+                self.live_widgets["ct"].set_target(live.get("content") or "")
 
     def clear(self):
         for _, w in self.blocks:

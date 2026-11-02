@@ -20,6 +20,7 @@ from .client import get_n_ctx, list_models
 from .chatview import ChatView, shadow
 from .theme import THEMES, palette, qss
 from . import memory, plugins
+from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
 
@@ -252,6 +253,11 @@ class SettingsDialog(QDialog):
         f.addRow("Max. Werkzeug-Schritte pro Anfrage", self.sp_steps)
         f.addRow("Kontextgröße, falls Server sie nicht meldet", self.sp_ctx)
         f.addRow(self.cb_head)
+        self.cb_index = QCheckBox("Dateisuche: Laufwerke unter /mnt täglich im Hintergrund indizieren")
+        self.cb_index.setChecked(bool(s.get("drive_index", True)))
+        self.cb_index.setToolTip("Macht find_files auf NAS/Laufwerken in unter 1 s möglich. Läuft mit niedrigster "
+                                 f"Priorität, Index: {T.DRIVE_INDEX}")
+        f.addRow(self.cb_index)
         f.addRow(QLabel(f"Konfigurationsdatei: {C.CONFIG_FILE}"))
         prow = QHBoxLayout()
         b_open = QPushButton("Plugin-Ordner öffnen")
@@ -499,6 +505,7 @@ class SettingsDialog(QDialog):
         s.update(tool_output_max_chars=self.sp_out.value(), keep_full_tool_results=self.sp_keep.value(),
                  old_tool_result_chars=self.sp_old.value(), max_steps=self.sp_steps.value(),
                  default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked(),
+                 drive_index=self.cb_index.isChecked(),
                  theme=self.cb_theme.currentText(),
                  popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
                  popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
@@ -657,6 +664,9 @@ def _icon_btn(text, tip, slot):
     b.setCursor(Qt.PointingHandCursor)
     b.clicked.connect(slot)
     return b
+
+
+_INDEX_TIMER = None
 
 
 class MainWindow(QMainWindow):
@@ -859,6 +869,15 @@ class MainWindow(QMainWindow):
             self.addAction(act)
 
         QApplication.styleHints().colorSchemeChanged.connect(lambda *_: self.apply_theme())
+        # Laufwerks-Index: beim Start und stündlich prüfen (nur ein Timer pro Programm)
+        global _INDEX_TIMER
+        if _INDEX_TIMER is None:
+            _INDEX_TIMER = QTimer(QApplication.instance())
+            _INDEX_TIMER.setInterval(3600 * 1000)
+            check = lambda: self.cfg["settings"].get("drive_index", True) and T.refresh_drive_index()
+            _INDEX_TIMER.timeout.connect(check)
+            _INDEX_TIMER.start()
+            QTimer.singleShot(20_000, check)     # nicht direkt beim Anmelden
         self.apply_theme()
         self._fill_combos()
         self._load_chat_list()
@@ -1210,6 +1229,7 @@ class MainWindow(QMainWindow):
         ("/stop", (), "", "Laufende Antwort abbrechen"),
         ("/gross", ("/big", "/fenster"), "", "Chat im großen Fenster öffnen"),
         ("/einstellungen", ("/settings",), "", "Einstellungen öffnen"),
+        ("/index", ("/reindex",), "", "Laufwerks-Index für die Dateisuche jetzt erneuern"),
         ("/quit", ("/beenden", "/exit"), "", "spike beenden"),
         ("/hilfe", ("/help",), "", "Alle Befehle zeigen"),
     ]
@@ -1360,6 +1380,11 @@ class MainWindow(QMainWindow):
                 self.toggle_compact()
         elif name == "/einstellungen":
             self.open_settings()
+        elif name == "/index":
+            age = T.drive_index_age()
+            msg = T.refresh_drive_index(max_age_h=0)
+            self._info(msg + (f" (bisher {age:.0f} h alt)" if age is not None else "") +
+                       " – dauert einige Minuten, spike bleibt benutzbar.")
         elif name == "/quit":
             if self.ctrl:
                 self.ctrl.quit()
