@@ -105,7 +105,10 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 - Shell-Befehle erscheinen als Terminal-Block mit Live-Ausgabe und Exit-Code. Stopp/Esc bricht einen Befehl ab.
 - `!befehl` führt selbst etwas im Terminal aus (wie in Claude Code). Die Ausgabe sieht das Modell bei der nächsten
   Frage. `cd` bleibt erhalten, auch für die Befehle des Modells. Interaktive Programme (sudo-Passwort, vim, less)
-  gehen nicht.
+  gehen nicht. `sudo` geht: Das Passwort fragt ein KDE-Fenster ab (`kdialog`), es geht direkt an sudo und nie an
+  das Modell.
+- **Denken an/aus** pro Profil (⚙ → Profile oder `/denken an|aus`): Aus ist bei einfachen Aufgaben deutlich schneller
+  (Dateisuche: 9 s statt 55 s). Wirkt bei llama.cpp mit Qwen & Co. (`enable_thinking`).
 
 ### Befehle
 
@@ -119,6 +122,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/kontext` | Kontext-Belegung anzeigen |
 | `/profil <Name>`, `/modell <Name>`, `/server <Name>` | wechseln (auch im Popup, wo die Kopfzeile fehlt) |
 | `/merk <Text>` | ins Gedächtnis schreiben |
+| `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/stop` | Antwort abbrechen |
 | `/gross` | Chat im großen Fenster öffnen |
 | `/einstellungen` | Einstellungen |

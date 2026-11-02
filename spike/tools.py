@@ -46,7 +46,8 @@ TOOL_SPECS = {
                          "submit": {"type": "boolean"}}, ["id", "text"]),
     "browser_back": _fn("browser_back", "Geht im Browser eine Seite zurück."),
     "run_shell": _fn("run_shell", "Führt einen bash-Befehl aus (Nutzer bestätigt). Kein interaktives Programm "
-                     "(kein sudo-Passwort, kein vim/less). „cd“ bleibt für folgende Befehle erhalten.",
+                     "(kein vim/less). sudo geht: der Nutzer gibt das Passwort selbst in einem Fenster ein. "
+                     "„cd“ bleibt für folgende Befehle erhalten.",
                      {"command": {"type": "string"}}, ["command"]),
     "read_file": _fn("read_file", "Liest eine Textdatei (ab offset).",
                      {"path": {"type": "string"}, "offset": {"type": "integer"}}, ["path"]),
@@ -314,6 +315,25 @@ def refresh_drive_index(max_age_h=24, wait=False) -> str:
     return "Index wird im Hintergrund erstellt."
 
 
+# ---------- sudo: Passwort über ein KDE-Fenster (geht direkt an sudo, nie an das Modell) ----------
+
+def _askpass() -> str:
+    tool = shutil.which("kdialog") or shutil.which("zenity")
+    if not tool:
+        return ""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    f = CACHE_DIR / "askpass.sh"
+    if "kdialog" in tool:
+        body = 'exec kdialog --title "spike – Administrator-Rechte" --password "${1:-Passwort für sudo:}"'
+    else:
+        body = 'exec zenity --password --title "spike – Administrator-Rechte"'
+    text = f"#!/bin/sh\n# von spike erzeugt: fragt das sudo-Passwort grafisch ab\n{body}\n"
+    if not f.exists() or f.read_text() != text:
+        f.write_text(text)
+        f.chmod(0o700)
+    return str(f)
+
+
 # ---------- Werkzeugkasten ----------
 
 class ToolBox:
@@ -332,10 +352,12 @@ class ToolBox:
         import signal
         import threading as _th
         timeout = timeout or int(self.settings.get("shell_timeout", 300))
-        script = (f"{command}\n__spike_rc=$?\nprintf '{self._CWD_MARK}%s\\n' \"$PWD\"\nexit $__spike_rc")
+        askpass = _askpass()
+        prelude = 'sudo() { command sudo -A "$@"; }\n' if askpass else ""
+        script = (f"{prelude}{command}\n__spike_rc=$?\nprintf '{self._CWD_MARK}%s\\n' \"$PWD\"\nexit $__spike_rc")
         cwd = self.cwd if Path(self.cwd).is_dir() else Path.home()
         env = {**os.environ, "TERM": "dumb", "PAGER": "cat", "GIT_PAGER": "cat", "SYSTEMD_PAGER": "cat",
-               "NO_COLOR": "1"}
+               "NO_COLOR": "1", **({"SUDO_ASKPASS": askpass} if askpass else {})}
         p = subprocess.Popen(["bash", "-c", script], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1,
                              start_new_session=True, env=env)

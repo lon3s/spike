@@ -188,6 +188,16 @@ class SettingsDialog(QDialog):
             t.valueChanged.connect(changed)
             f.addRow("Temperatur", t)
             fields["temperature"] = (t, t.value, lambda v: t.setValue(float(v if v is not None else 0.7)))
+            th = QComboBox()
+            th.addItem("Standard (wie der Server eingestellt ist)", "standard")
+            th.addItem("An – gründlicher, aber langsamer", "an")
+            th.addItem("Aus – schnell, gut für einfache Aufgaben", "aus")
+            th.setToolTip("Ob das Modell vor der Antwort „nachdenkt“ (💭). Wirkt bei llama.cpp mit Qwen & Co.\n"
+                          "Im Chat umschalten: /denken an|aus")
+            th.currentIndexChanged.connect(changed)
+            f.addRow("Denken", th)
+            fields["thinking"] = (th, th.currentData,
+                                  lambda v: th.setCurrentIndex(max(0, th.findData(v or "standard"))))
             mt = QSpinBox()
             mt.setRange(0, 1_000_000)
             mt.setSpecialValueText("unbegrenzt")
@@ -1290,7 +1300,8 @@ class MainWindow(QMainWindow):
         model = (self.model_id() or "").rsplit("/", 1)[-1].removesuffix(".gguf")
         if len(model) > 26:
             model = model[:25] + "…"
-        self.meta_model.setText(" · ".join(x for x in (model, self.cb_profile.currentText()) if x))
+        think = {"an": "💭 an", "aus": "💭 aus"}.get(self.profile().get("thinking", "standard"), "")
+        self.meta_model.setText(" · ".join(x for x in (model, self.cb_profile.currentText(), think) if x))
         self.meta_model.setToolTip(f"Server: {self.cb_ep.currentText()}\nModell: {self.model_id()}\n"
                                    f"Profil: {self.cb_profile.currentText()}\n(/modell, /profil, /server zum Wechseln)")
 
@@ -1304,6 +1315,7 @@ class MainWindow(QMainWindow):
         ("/modell", ("/model",), "<Name>", "Modell wechseln"),
         ("/server", ("/endpoint",), "<Name>", "Server wechseln"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
+        ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
         ("/gross", ("/big", "/fenster"), "", "Chat im großen Fenster öffnen"),
         ("/einstellungen", ("/settings",), "", "Einstellungen öffnen"),
@@ -1321,6 +1333,8 @@ class MainWindow(QMainWindow):
             return [p["name"] for p in self.cfg["profiles"]]
         if cmd == "/server":
             return [e["name"] for e in self.cfg["endpoints"]]
+        if cmd == "/denken":
+            return ["an", "aus", "standard"]
         if cmd == "/modell":
             return [self.cb_model.itemText(i) for i in range(self.cb_model.count())]
         return []
@@ -1443,6 +1457,15 @@ class MainWindow(QMainWindow):
             self._sync_chat_settings()
             self._estimate()
             self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/denken":
+            prof = self.profile()
+            cur = prof.get("thinking", "standard")
+            new = {"an": "an", "on": "an", "ein": "an", "aus": "aus", "off": "aus",
+                   "standard": "standard"}.get(arg.lower(), "aus" if cur != "aus" else "an")
+            prof["thinking"] = new
+            C.save_config(self.cfg)
+            self._update_meta()
+            self._info(f"💭 Denken im Profil „{prof.get('name')}“: {new}")
         elif name == "/merk":
             if not arg:
                 self._info("Was soll ich mir merken? /merk <Text>")

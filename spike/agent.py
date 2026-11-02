@@ -10,6 +10,19 @@ from .client import complete, stream_chat
 from .context import budget, build_messages, estimate_tokens, pick_cut, summary_request
 from .tools import MEMORY_TOOLS, expand, specs_for
 
+NO_THINK_SWITCH = set()     # Server-URLs, die chat_template_kwargs ablehnen (nur für diese Sitzung)
+
+
+def list_first(gen):
+    """Startet den Stream (damit HTTP-Fehler sofort kommen) und liefert ihn danach vollständig weiter."""
+    import itertools
+    try:
+        first = next(gen)
+    except StopIteration:
+        return iter(())
+    return itertools.chain([first], gen)
+
+
 MEMORY_HOWTO = (
     "Wenn der Nutzer dir etwas Dauerhaftes über sich, seine Vorlieben oder seine Systeme mitteilt oder "
     "„merk dir …“ sagt, speichere es knapp mit memory_save. Fehlt dir Wissen über den Nutzer, suche mit "
@@ -201,6 +214,10 @@ class Agent(QObject):
         system = self._system_prompt()
         max_tokens = int(self.profile.get("max_tokens") or 0)
         params = {"temperature": float(self.profile.get("temperature", 0.7))}
+        thinking = self.profile.get("thinking", "standard")
+        if thinking in ("an", "aus") and self.ep.get("url") not in NO_THINK_SWITCH:
+            # llama.cpp + Qwen & Co.: Denken pro Anfrage an/aus
+            params["chat_template_kwargs"] = {"enable_thinking": thinking == "an"}
         if max_tokens:
             params["max_tokens"] = max_tokens
 
@@ -226,7 +243,17 @@ class Agent(QObject):
             self.usage.emit(estimate_tokens(payload), self.n_ctx or 0, -1.0)
             calls, usage, timings = {}, None, None
             n_tok, t_first, t_emit = 0, None, 0.0
-            for chunk in stream_chat(self.ep, self.model, payload, tools, params, lambda: self.stopped):
+            try:
+                stream = list_first(stream_chat(self.ep, self.model, payload, tools, params, lambda: self.stopped))
+            except RuntimeError as e:
+                if "chat_template_kwargs" in params and "HTTP 4" in str(e):
+                    params.pop("chat_template_kwargs")      # Server kennt den Schalter nicht → ohne
+                    NO_THINK_SWITCH.add(self.ep.get("url"))
+                    self.info.emit("Hinweis: Dieser Server kann Denken nicht pro Anfrage schalten.")
+                    stream = list_first(stream_chat(self.ep, self.model, payload, tools, params, lambda: self.stopped))
+                else:
+                    raise
+            for chunk in stream:
                 usage = chunk.get("usage") or usage
                 timings = chunk.get("timings") or timings
                 for ch in chunk.get("choices") or []:
