@@ -252,6 +252,7 @@ class Agent(QObject):
             self.usage.emit(estimate_tokens(payload), self.n_ctx or 0, -1.0)
             calls, usage, timings = {}, None, None
             n_tok, t_first, t_emit = 0, None, 0.0
+            finish = None
             try:
                 stream = list_first(stream_chat(self.ep, self.model, payload, tools, params, lambda: self.stopped))
             except RuntimeError as e:
@@ -265,7 +266,11 @@ class Agent(QObject):
             for chunk in stream:
                 usage = chunk.get("usage") or usage
                 timings = chunk.get("timings") or timings
+                if chunk.get("error"):      # manche Server schicken Fehler mitten im Stream
+                    err = chunk["error"]
+                    raise RuntimeError(f"Server-Fehler: {err.get('message', err) if isinstance(err, dict) else err}")
                 for ch in chunk.get("choices") or []:
+                    finish = ch.get("finish_reason") or finish
                     d = ch.get("delta") or {}
                     if d:     # grob: ein Stream-Häppchen ≈ ein Token
                         n_tok += 1
@@ -296,6 +301,11 @@ class Agent(QObject):
                 self.stats.emit(txt, used, self.n_ctx or 0)
                 self.usage.emit(used, self.n_ctx or 0, tps)
 
+            if not finish and not self.stopped and not calls:
+                if not self.live["content"]:
+                    raise RuntimeError("Der Server hat die Verbindung ohne Antwort beendet – vermutlich abgestürzt "
+                                       "(z. B. beim Verarbeiten eines Bildes). Bitte das Server-Log prüfen.")
+                self.info.emit("⚠ Antwort wurde vom Server abgebrochen (unvollständig).")
             msg = {"role": "assistant", "content": self.live["content"]}
             if self.live["reasoning"]:
                 msg["_reasoning"] = self.live["reasoning"]   # nur Anzeige, wird nicht zurückgeschickt

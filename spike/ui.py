@@ -1181,8 +1181,12 @@ class MainWindow(QMainWindow):
         for mid in models:   # lange Pfade kurz anzeigen, volle ID als Daten
             self.cb_model.addItem(mid.rsplit("/", 1)[-1], mid)
         idx = self.cb_model.findData(want)
+        if idx < 0 and want:      # auch kurzen Namen akzeptieren (z. B. von Hand eingetragen)
+            idx = self.cb_model.findText(want.rsplit("/", 1)[-1])
         if idx >= 0:
             self.cb_model.setCurrentIndex(idx)
+        elif models:              # gespeichertes Modell gibt es auf diesem Server nicht → Modell des Servers nehmen
+            self.cb_model.setCurrentIndex(0)
         elif want:
             self.cb_model.setEditText(want)
         self.cb_model.blockSignals(False)
