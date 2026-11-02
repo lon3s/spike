@@ -45,16 +45,16 @@ Bekannter Server im Netz:
 
 | Name   | URL                           | Hinweis                                    |
 |--------|-------------------------------|--------------------------------------------|
-| PC-185 | http://192.168.178.185:9070   | llama.cpp, Qwen 27B, 131k Kontext, Tools ok |
+| LLM-PC | http://192.168.1.50:9070   | llama.cpp, Qwen 27B, 131k Kontext, Tools ok |
 
 Eintragen entweder in der App (⚙ Einstellungen → Endpunkte → „Verbindung testen“) oder direkt in der JSON-Datei
 unter `"endpoints"`:
 
 ```json
-{"name": "PC-185", "url": "http://192.168.178.185:9070", "api_key": "", "model": ""}
+{"name": "LLM-PC", "url": "http://192.168.1.50:9070", "api_key": "", "model": ""}
 ```
 
-Verbindung testen: `curl -s http://192.168.178.185:9070/v1/models`
+Verbindung testen: `curl -s http://192.168.1.50:9070/v1/models`
 
 Wenn auf diesem PC selbst ein llama-server laufen soll, der von den anderen PCs erreichbar ist:
 `llama-server -m <modell.gguf> --host 0.0.0.0 --port <port> --jinja -c <kontext>`

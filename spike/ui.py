@@ -447,7 +447,7 @@ class SettingsDialog(QDialog):
         f.addRow("Rechnen auf", dev)
         self.sp_fields["stt_device"] = dev.currentText
         line("stt_language", "Sprache", "de")
-        line("stt_url", "Oder Server-URL", "z. B. http://192.168.178.185:8080 (OpenAI /v1/audio/transcriptions)")
+        line("stt_url", "Oder Server-URL", "z. B. http://192.168.1.50:8080 (OpenAI /v1/audio/transcriptions)")
         auto = QCheckBox("Nach dem Sprechen sofort senden")
         auto.setChecked(bool(s.get("stt_autosend")))
         f.addRow(auto)
@@ -1020,6 +1020,8 @@ class MainWindow(QMainWindow):
         btn_new.clicked.connect(self.new_chat)
         self.chat_list = QListWidget()
         self.chat_list.setObjectName("Chats")
+        self.chat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # lange Titel mit „…“ statt Scrollleiste
+        self.chat_list.setTextElideMode(Qt.ElideRight)
         self.chat_list.currentItemChanged.connect(self._chat_selected)
         btn_del = QPushButton("Chat löschen")
         btn_del.setObjectName("Danger")

@@ -4,6 +4,12 @@ Leichtgewichtige Desktop-App (Python + Qt) zum Chatten mit mehreren LLM-Servern 
 **OpenAI-kompatible API**, also llama.cpp `llama-server`, Ollama, LM Studio, vLLM, OpenAI, OpenRouter und andere.
 Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind eingebaut.
 
+<p align="center">
+  <img src="docs/screenshot-fenster.png" alt="spike – großes Fenster mit Terminal-Block" width="68%">
+  &nbsp;
+  <img src="docs/screenshot-popup.png" alt="spike – Tray-Popup mit Leuchtrahmen" width="28%">
+</p>
+
 ## Funktionen
 
 - **Mehrere Server und APIs**: Endpunkte mit IP:Port oder URL und optionalem API-Key anlegen, im Chat umschalten,
