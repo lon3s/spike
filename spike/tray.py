@@ -21,10 +21,10 @@ from .tools import Browser, load_plugins
 
 ICON = Path(__file__).resolve().parent / "assets" / "spike.svg"
 SOCKET = f"spike-{os.getuid()}"
-POPUP_SIZE = (470, 680)
+POPUP_SIZE = (500, 720)   # inkl. Schattenrand
 
 
-def _layer_shell(widget, margin=12) -> bool:
+def _layer_shell(widget, margin=0) -> bool:
     """Dockt ein Fenster unter KDE/Wayland per layer-shell unten rechts an (wie System-Popups)."""
     if QApplication.platformName() != "wayland":
         return False
@@ -97,7 +97,7 @@ class Controller:
         if self.layer:
             return
         geo = (self.app.screenAt(self.tray.geometry().center()) or self.app.primaryScreen()).availableGeometry()
-        self.popup.move(geo.right() - POPUP_SIZE[0] - 12, geo.bottom() - POPUP_SIZE[1] - 12)
+        self.popup.move(geo.right() - POPUP_SIZE[0], geo.bottom() - POPUP_SIZE[1])
 
     def toggle_popup(self):
         self._ensure_popup()

@@ -4,9 +4,9 @@ import threading
 import time
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
     QVBoxLayout, QWidget,
@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
 from . import config as C
 from .agent import Agent
 from .client import get_n_ctx, list_models
-from .theme import THEMES, palette, qss, render_html, welcome_html
+from .chatview import ChatView, shadow
+from .theme import THEMES, palette, qss
 from . import plugins
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
@@ -43,22 +44,6 @@ class InputBox(QPlainTextEdit):
             self.submitted.emit()
             return
         super().keyPressEvent(e)
-
-
-class ChatView(QTextBrowser):
-    """Chatverlauf als mittige Spalte mit begrenzter Breite."""
-    MAX_W = 860
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("Chat")
-        self.setOpenExternalLinks(True)
-        self.document().setDocumentMargin(18)
-
-    def resizeEvent(self, e):
-        side = max(0, (self.width() - self.MAX_W) // 2)
-        self.setViewportMargins(side, 0, side, 0)
-        super().resizeEvent(e)
 
 
 class Bridge(QObject):
@@ -314,6 +299,36 @@ class SettingsDialog(QDialog):
 
 # ---------- Hauptfenster ----------
 
+class PopupShell(QWidget):
+    """Durchsichtiger Rand mit selbst gemaltem weichen Schatten + runder Inhalt."""
+    PAD, RADIUS = 16, 18
+
+    def __init__(self, content, win):
+        super().__init__()
+        self.win = win
+        frame = QFrame()
+        frame.setObjectName("PopupFrame")
+        fl = QVBoxLayout(frame)
+        fl.setContentsMargins(1, 1, 1, 1)
+        fl.addWidget(content)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(self.PAD, self.PAD - 4, self.PAD, self.PAD + 4)
+        lay.addWidget(frame)
+        self.frame = frame
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        dark = self.win.colors.get("name") == "dark"
+        r = self.frame.geometry().translated(0, 4)
+        for i in range(self.PAD, 0, -1):    # weicher Schatten aus vielen halbtransparenten Ringen
+            alpha = int((10 if dark else 5) * (1 - i / self.PAD) ** 1.6 * 2.2)
+            p.setBrush(QColor(0, 0, 0, alpha))
+            p.drawRoundedRect(r.adjusted(-i, -i, i, i), self.RADIUS + i, self.RADIUS + i)
+        p.end()
+
+
 def _icon_btn(text, tip, slot):
     b = QPushButton(text)
     b.setObjectName("Icon")
@@ -421,6 +436,7 @@ class MainWindow(QMainWindow):
         composer = QWidget()
         composer.setObjectName("Composer")
         composer.setMaximumWidth(ChatView.MAX_W)
+        self.composer = composer
         cl = QHBoxLayout(composer)
         cl.setContentsMargins(10, 6, 6, 6)
         cl.addWidget(self.btn_compact, 0, Qt.AlignBottom)
@@ -428,7 +444,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
         cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
         crow = QHBoxLayout()
-        crow.setContentsMargins(16, 4, 16, 12)
+        crow.setContentsMargins(22, 6, 22, 16)
         crow.addStretch(1)
         crow.addWidget(composer, 100)
         crow.addStretch(1)
@@ -442,12 +458,17 @@ class MainWindow(QMainWindow):
         ml.addLayout(crow)
 
         root = QWidget()
+        root.setObjectName("Root")
         rl = QHBoxLayout(root)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
         rl.addWidget(self.side)
         rl.addWidget(main, 1)
-        self.setCentralWidget(root)
+        if popup:
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setCentralWidget(PopupShell(root, self))
+        else:
+            self.setCentralWidget(root)
 
         # --- Statusleiste ---
         self.status = QLabel()
@@ -490,6 +511,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.setPalette(palette(self.colors))
         app.setStyleSheet(qss(self.colors))
+        shadow(self.composer, self.colors, blur=28, dy=6)
         if self.chat is not None:
             self.redraw()
 
@@ -741,16 +763,11 @@ class MainWindow(QMainWindow):
         self.input.setFocus()
 
     def redraw(self, force_bottom=False):
-        sb = self.view.verticalScrollBar()
-        at_bottom = force_bottom or sb.value() >= sb.maximum() - 40
         msgs = self.chat["messages"] if self.chat else []
         live = self.agent.live if self.agent else None
-        if not msgs and live is None:
-            self.view.setHtml(welcome_html(self.colors))
-            return
-        self.view.setHtml(render_html(msgs, live, self.colors, self.is_compact()))
-        if at_bottom:
-            sb.setValue(sb.maximum())
+        if force_bottom:
+            self.view.scroll_bottom()
+        self.view.render(msgs, live, self.colors, self.is_compact())
 
     # --- Einstellungen ---
     def open_settings(self):

@@ -9,13 +9,13 @@ from .tools import short_args
 
 THEMES = {
     "dark": {
-        "bg": "#14151a", "panel": "#1b1c22", "panel2": "#24252d", "border": "#30313b",
+        "name": "dark", "bg": "#14151a", "panel": "#1b1c22", "panel2": "#24252d", "border": "#30313b",
         "text": "#e7e7ec", "muted": "#8a8c99", "accent": "#7c6cf0", "accent_hover": "#8f81f5",
         "accent_text": "#ffffff", "user": "#2a2748", "code": "#0d0e12", "chip": "#22232b",
         "danger": "#e5676b", "sel": "#2f2b55",
     },
     "light": {
-        "bg": "#f7f7f9", "panel": "#ffffff", "panel2": "#efeff3", "border": "#dedee5",
+        "name": "light", "bg": "#f7f7f9", "panel": "#ffffff", "panel2": "#efeff3", "border": "#dedee5",
         "text": "#1c1c22", "muted": "#6c6e7a", "accent": "#6a5ae0", "accent_hover": "#5a4ad0",
         "accent_text": "#ffffff", "user": "#ebe8ff", "code": "#f1f1f5", "chip": "#f0f0f4",
         "danger": "#c9444a", "sel": "#e3dfff",
@@ -38,10 +38,25 @@ def qss(c) -> str:
     return f"""
     QWidget {{ color: {c['text']}; font-size: 10.5pt; }}
     QMainWindow, QDialog {{ background: {c['bg']}; }}
-    QMainWindow#Popup {{ border: 1px solid {c['border']}; }}
+    QMainWindow#Popup {{ background: transparent; }}
     #Side {{ background: {c['panel']}; border-right: 1px solid {c['border']}; }}
     #TopBar {{ background: {c['bg']}; border-bottom: 1px solid {c['border']}; }}
-    #Composer {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 14px; }}
+    #Composer {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 20px; }}
+    QScrollArea#Chat, #ChatInner, #ChatColumn {{ background: {c['bg']}; border: none; }}
+    #UserBubble {{ background: {c['user']}; border-radius: 18px; border-bottom-right-radius: 6px; }}
+    #Code {{ background: {c['code']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+    #CodeLang {{ color: {c['muted']}; font-size: 8.5pt; font-weight: 600; }}
+    #CodeText {{ color: {c['text']}; background: transparent; }}
+    QPushButton#CopyBtn {{ background: transparent; border: 1px solid {c['border']}; border-radius: 7px;
+                          padding: 2px 9px; font-size: 8.5pt; color: {c['muted']}; }}
+    QPushButton#CopyBtn:hover {{ color: {c['text']}; border-color: {c['accent']}; }}
+    #Chip {{ background: {c['chip']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+    #ChipText {{ font-size: 9pt; }}
+    #Reasoning {{ color: {c['muted']}; font-size: 9pt; }}
+    #RoleLabel {{ color: {c['muted']}; font-size: 8.5pt; font-weight: 700; padding-top: 6px; }}
+    #WelcomeTitle {{ font-size: 22pt; font-weight: 700; }}
+    #PopupFrame {{ background: {c['bg']}; border: 1px solid {c['border']}; border-radius: 18px; }}
+    #PopupFrame #Root, #PopupFrame #TopBar {{ background: transparent; }}
     #Composer:focus-within {{ border-color: {c['accent']}; }}
     QTextBrowser#Chat {{ background: {c['bg']}; border: none; }}
     QPlainTextEdit#Input {{ background: transparent; border: none; padding: 4px; }}
@@ -49,7 +64,7 @@ def qss(c) -> str:
     QListWidget#Chats::item {{ padding: 8px 10px; border-radius: 8px; margin: 1px 0; color: {c['muted']}; }}
     QListWidget#Chats::item:hover {{ background: {c['panel2']}; color: {c['text']}; }}
     QListWidget#Chats::item:selected {{ background: {c['sel']}; color: {c['text']}; }}
-    QPushButton {{ background: {c['panel2']}; border: 1px solid {c['border']}; border-radius: 9px;
+    QPushButton {{ background: {c['panel2']}; border: 1px solid {c['border']}; border-radius: 10px;
                   padding: 6px 12px; }}
     QPushButton:hover {{ border-color: {c['accent']}; }}
     QPushButton:disabled {{ color: {c['muted']}; background: {c['panel']}; }}
@@ -61,7 +76,7 @@ def qss(c) -> str:
     QPushButton#Icon:hover {{ background: {c['panel2']}; color: {c['text']}; }}
     QPushButton#Danger:hover {{ border-color: {c['danger']}; color: {c['danger']}; }}
     QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {{ background: {c['panel']}; border: 1px solid {c['border']};
-                  border-radius: 8px; padding: 5px 8px; }}
+                  border-radius: 10px; padding: 5px 9px; }}
     QComboBox:hover, QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {c['accent']}; }}
     QComboBox::drop-down {{ border: none; width: 20px; }}
     QComboBox QAbstractItemView {{ background: {c['panel']}; border: 1px solid {c['border']};
