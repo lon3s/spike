@@ -45,6 +45,10 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   `npx -y @modelcontextprotocol/server-filesystem ~/Dokumente`. Ihre Werkzeuge heißen `mcp_<server>_<werkzeug>` und sind
   im Profil „Alles“ automatisch dabei. Freigabe: standardmäßig nur bei Werkzeugen, die etwas ändern (readOnlyHint).
   Achtung: Große Server (z. B. GitHub mit ~40 Werkzeugen) kosten viel Kontext – dann lieber ein eigenes Profil.
+- **Sprache**: 🎤 bzw. Strg+M – sprechen, nochmal klicken, Text landet im Eingabefeld (faster-whisper lokal, z. B. aus
+  pyvideotrans; GPU wenn frei, sonst CPU; oder ein OpenAI-kompatibler Server). 🔊 unter der Antwort bzw. `/vorlesen`
+  liest mit der VoxCPM-API vor (Stimme `senol1`), satzweise; spike startet die API bei Bedarf selbst
+  (⚙ → Sprache → Startbefehl). `/stop` beendet das Vorlesen.
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
@@ -140,6 +144,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/profil <Name>`, `/modell <Name>`, `/server <Name>` | wechseln (auch im Popup, wo die Kopfzeile fehlt) |
 | `/screenshot [Frage]` | Bildschirmfoto anhängen |
 | `/aufgaben` | geplante Erinnerungen/Aufgaben |
+| `/vorlesen [Text]` | letzte Antwort vorlesen |
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/stop` | Antwort abbrechen |

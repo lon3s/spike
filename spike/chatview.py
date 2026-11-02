@@ -529,6 +529,7 @@ class ChatView(QScrollArea):
         self.live_widgets = {}  # "rs"/"ct" -> LiveText (bleibt während des Streamens bestehen)
         self.term_widgets = {}  # ("t", tool_id) / ("u", index) -> TermCard
         self.on_confirm = None  # fn("yes"|"always"|"no")
+        self.on_speak = None    # fn(text) – 🔊 unter der letzten Antwort
         self._stick = True
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
@@ -614,6 +615,10 @@ class ChatView(QScrollArea):
             else:
                 continue
             prev = r
+        last = messages[-1] if messages else None
+        if live is None and self.on_speak and last and last["role"] == "assistant" and last.get("content"):
+            txt = last["content"]
+            specs.append((("speak", len(messages), hash(txt), theme), lambda txt=txt: self._speak_row(txt)))
         if live is not None:
             if prev in (None, "user"):
                 specs.append((("lbl-live", theme), lambda: role_label("ASSISTENT")))
@@ -628,6 +633,21 @@ class ChatView(QScrollArea):
             specs.append((("confirm", id(pending), theme),
                           lambda: confirm_card(pending, c, lambda ch: self.on_confirm and self.on_confirm(ch))))
         return specs
+
+    def _speak_row(self, text):
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        for label, tip, fn in (("🔊 Vorlesen", "Antwort vorlesen (/vorlesen)", lambda: self.on_speak(text)),
+                               ("Kopieren", "Antwort kopieren", lambda: QApplication.clipboard().setText(text))):
+            b = QPushButton(label)
+            b.setObjectName("CopyBtn")
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(fn)
+            lay.addWidget(b)
+        lay.addStretch(1)
+        return w
 
     def _make_term(self, key, cmd, cwd, title, out, running, code):
         w = TermCard(cmd, cwd, title)

@@ -19,7 +19,7 @@ from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .theme import THEMES, palette, qss
-from . import attachments as A, mcp, memory, plugins, scheduler as S
+from . import attachments as A, mcp, memory, plugins, scheduler as S, speech
 from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
@@ -68,6 +68,8 @@ class Bridge(QObject):
     screenshot_done = Signal(object, str)          # anhang (oder None), fehler
     open_chat = Signal(str)                        # Klick auf „Öffnen“ in einer Benachrichtigung
     task_done = Signal(str, str, str)              # chat_id, titel, antwort (geplante Aufgabe fertig)
+    stt_done = Signal(str, str, str)               # text, info, fehler
+    speech_state = Signal(str)
     shell_update = Signal()                       # !-Befehl: neue Ausgabe
     shell_done = Signal()
 
@@ -156,7 +158,7 @@ class SettingsDialog(QDialog):
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
-        self.resize(820, 560)
+        self.resize(960, 620)
         self.cfg = copy.deepcopy(cfg)
         tabs = QTabWidget()
 
@@ -301,6 +303,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(gen, "Allgemein")
         tabs.addTab(self._memory_tab(s), "Gedächtnis && Kontext")
         tabs.addTab(self._mcp_tab(s), "MCP-Server")
+        tabs.addTab(self._speech_tab(s), "Sprache")
         tabs.addTab(self._glow_tab(s), "Popup-Rahmen")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -312,6 +315,48 @@ class SettingsDialog(QDialog):
 
         self._bridge = Bridge()
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _speech_tab(self, s):
+        w = QWidget()
+        f = QFormLayout(w)
+        f.addRow(QLabel("<b>Sprechen 🎤</b> (Strg+M) – faster-whisper lokal oder ein Server"))
+        self.sp_fields = {}
+
+        def line(key, label, ph=""):
+            e = QLineEdit(str(s.get(key, "")))
+            e.setPlaceholderText(ph)
+            f.addRow(label, e)
+            self.sp_fields[key] = e.text
+            return e
+        line("stt_python", "Python mit faster-whisper", f"leer = automatisch ({speech._find_python(s) or 'nicht gefunden'})")
+        line("stt_model", "Modell", f"leer = automatisch ({speech._find_model(s)})")
+        dev = QComboBox()
+        dev.addItems(["auto", "cuda", "cpu"])
+        dev.setCurrentText(s.get("stt_device", "auto"))
+        dev.setToolTip("auto: GPU, wenn genug Speicher frei ist, sonst CPU")
+        f.addRow("Rechnen auf", dev)
+        self.sp_fields["stt_device"] = dev.currentText
+        line("stt_language", "Sprache", "de")
+        line("stt_url", "Oder Server-URL", "z. B. http://192.168.178.185:8080 (OpenAI /v1/audio/transcriptions)")
+        auto = QCheckBox("Nach dem Sprechen sofort senden")
+        auto.setChecked(bool(s.get("stt_autosend")))
+        f.addRow(auto)
+        self.sp_fields["stt_autosend"] = auto.isChecked
+        f.addRow(QLabel("<b>Vorlesen 🔊</b> – VoxCPM-API (deine Stimme)"))
+        line("tts_url", "TTS-URL", "http://127.0.0.1:8000/tts")
+        line("tts_voice", "Stimme", "senol1")
+        line("tts_language", "Sprache", "de")
+        line("tts_start", "Startbefehl (falls nicht läuft)", "leer = nicht automatisch starten")
+        ta = QCheckBox("Antworten automatisch vorlesen")
+        ta.setChecked(bool(s.get("tts_auto")))
+        f.addRow(ta)
+        self.sp_fields["tts_auto"] = ta.isChecked
+        hint = QLabel("VoxCPM braucht eine GPU mit einigen GB frei. Wird es automatisch gestartet, beendet spike es "
+                      "beim Beenden wieder.")
+        hint.setWordWrap(True)
+        hint.setObjectName("Muted")
+        f.addRow(hint)
+        return w
 
     def _mcp_tab(self, s):
         w = QWidget()
@@ -596,7 +641,8 @@ class SettingsDialog(QDialog):
                  popup_glow_width=self.sp_glow_width.value(),
                  memory_enabled=self.cb_mem.isChecked(), memory_prompt_chars=self.sp_mem.value(),
                  auto_compact=self.cb_compact.isChecked(), compact_at_percent=self.sp_cat.value(),
-                 compact_keep_percent=self.sp_ckeep.value(), python_timeout=self.sp_pyto.value())
+                 compact_keep_percent=self.sp_ckeep.value(), python_timeout=self.sp_pyto.value(),
+                 **{k: get() for k, get in self.sp_fields.items()})
         return self.cfg
 
 
@@ -778,6 +824,13 @@ class MainWindow(QMainWindow):
         self.bridge.screenshot_done.connect(self._screenshot_done)
         self.bridge.open_chat.connect(self._open_chat_from_notification)
         self.bridge.task_done.connect(self._task_done)
+        self.bridge.stt_done.connect(self._stt_done)
+        self.bridge.speech_state.connect(lambda t: self._info(t))
+        self.recorder = speech.Recorder()
+        self.speaker = speech.Speaker(self.cfg["settings"], on_state=self.bridge.speech_state.emit)
+        self._rec_timer = QTimer(self)
+        self._rec_timer.setInterval(250)
+        self._rec_timer.timeout.connect(self._rec_tick)
         self.vision = {}             # endpoint-name -> versteht Bilder?
         self.attachments = []        # Anhänge für die nächste Nachricht
         self.setAcceptDrops(True)
@@ -844,6 +897,7 @@ class MainWindow(QMainWindow):
         # --- Chat + Eingabe ---
         self.view = ChatView()
         self.view.on_confirm = self._confirm_choice
+        self.view.on_speak = self.speak
         self.input = InputBox()
         self.input.setPlaceholderText("Nachricht schreiben …")
         self.input.setToolTip("Enter = senden · Shift+Enter = neue Zeile · Esc = Stopp\n"
@@ -885,6 +939,9 @@ class MainWindow(QMainWindow):
         for b in (self.btn_compact, self.btn_pin):
             b.setFixedSize(36, 36)
         cl.addWidget(self.input, 1)
+        self.btn_mic = _icon_btn("🎤", "Sprechen (Strg+M): klicken, reden, nochmal klicken", self.toggle_record)
+        self.btn_mic.setFixedSize(36, 36)
+        cl.addWidget(self.btn_mic, 0, Qt.AlignBottom)
         cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
         cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
         # Vorschlagsliste für /Befehle (über dem Eingabefeld)
@@ -969,7 +1026,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.ctx_bar)
         self.statusBar().setSizeGripEnabled(False)
 
-        for keys, slot in (("Ctrl+N", self.new_chat), ("Ctrl+K", self.toggle_compact),
+        for keys, slot in (("Ctrl+N", self.new_chat), ("Ctrl+K", self.toggle_compact), ("Ctrl+M", self.toggle_record),
                            ("Ctrl+B", self.toggle_side), ("Escape", self.escape)):
             act = QAction(self)
             act.setShortcut(QKeySequence(keys))
@@ -1225,6 +1282,66 @@ class MainWindow(QMainWindow):
             self.new_chat()
 
     # --- Senden ---
+    # --- Sprache ---
+    def toggle_record(self):
+        if self.recorder.active:
+            path = self.recorder.stop()
+            self._rec_timer.stop()
+            self.btn_mic.setText("🎤")
+            self.btn_mic.setStyleSheet("")
+            self.input.setPlaceholderText("Nachricht schreiben …")
+            if not path:
+                self._info("Aufnahme zu kurz")
+                return
+            self._info("✍ Wandle Sprache in Text um … (beim ersten Mal lädt das Modell)")
+            settings = dict(self.cfg["settings"])
+
+            def job():
+                try:
+                    text, info = speech.transcribe(path, settings)
+                    self.bridge.stt_done.emit(text, info, "")
+                except Exception as e:
+                    self.bridge.stt_done.emit("", "", str(e))
+                finally:
+                    path.unlink(missing_ok=True)
+            threading.Thread(target=job, daemon=True).start()
+            return
+        try:
+            self.speaker.stop()
+            self.recorder.start()
+        except Exception as e:
+            self._info(f"⚠ Mikrofon: {e}")
+            return
+        self.btn_mic.setText("⏺")
+        self.btn_mic.setStyleSheet("color: #e5484d;")
+        self._rec_timer.start()
+        self._rec_tick()
+
+    def _rec_tick(self):
+        self.input.setPlaceholderText(f"🎤 Aufnahme {self.recorder.seconds():.0f} s … nochmal klicken oder Strg+M")
+
+    def _stt_done(self, text, info, err):
+        if err:
+            self._info(f"⚠ Spracherkennung: {err}")
+            return
+        if not text:
+            self._info("Nichts verstanden")
+            return
+        cur = self.input.toPlainText()
+        self.input.setPlainText((cur + " " if cur.strip() else "") + text)
+        c = self.input.textCursor()
+        c.movePosition(c.MoveOperation.End)
+        self.input.setTextCursor(c)
+        self._info(f"✍ erkannt ({info})")
+        if self.cfg["settings"].get("stt_autosend"):
+            self.send()
+        else:
+            self.input.setFocus()
+
+    def speak(self, text):
+        self.speaker.settings = self.cfg["settings"]
+        self.speaker.speak(text)
+
     # --- Erinnerungen / geplante Aufgaben ---
     def _run_due_tasks(self):
         for t in S.due(time.time()):
@@ -1524,6 +1641,10 @@ class MainWindow(QMainWindow):
         self.status.setText(text)
 
     def _finished(self):
+        if self.cfg["settings"].get("tts_auto") and self.chat and self.chat["messages"]:
+            last = self.chat["messages"][-1]
+            if last["role"] == "assistant" and last.get("content"):
+                self.speak(last["content"])
         C.save_chat(self.chat)
         self.agent = None
         self.btn_stop.hide()
@@ -1584,6 +1705,7 @@ class MainWindow(QMainWindow):
         ("/server", ("/endpoint",), "<Name>", "Server wechseln"),
         ("/screenshot", ("/bildschirm",), "[Frage]", "Bildschirmfoto anhängen (mit Frage: gleich senden)"),
         ("/aufgaben", ("/tasks", "/erinnerungen"), "", "Geplante Erinnerungen und Aufgaben anzeigen"),
+        ("/vorlesen", ("/speak", "/sag"), "[Text]", "Letzte Antwort (oder Text) vorlesen"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
@@ -1727,6 +1849,13 @@ class MainWindow(QMainWindow):
             self._sync_chat_settings()
             self._estimate()
             self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/vorlesen":
+            last = next((m.get("content") for m in reversed(self.chat["messages"] if self.chat else [])
+                         if m["role"] == "assistant" and m.get("content")), "")
+            if arg or last:
+                self.speak(arg or last)
+            else:
+                self._info("Noch keine Antwort zum Vorlesen")
         elif name == "/aufgaben":
             tasks = sorted(S.load(), key=lambda t: t["next"])
             if not tasks:
@@ -1753,6 +1882,7 @@ class MainWindow(QMainWindow):
             self._info(f"🧠 Gemerkt: {m['text'][:60]}")
         elif name == "/stop":
             self.stop()
+            self.speaker.stop()
         elif name == "/gross":
             if self.popup and self.ctrl:
                 self.ctrl.show_main(self.chat["id"] if self.chat else None)

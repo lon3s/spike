@@ -108,6 +108,11 @@ DEFAULT_CONFIG = {
         "attach_max_chars": 30000,                # so viel Text pro angehängter Datei
         # MCP-Server: [{"name", "command", "env": {}, "enabled": true, "confirm": "schreibend"|"immer"|"nie"}]
         "mcp_servers": [],
+        # Sprache
+        "stt_python": "", "stt_model": "", "stt_device": "auto", "stt_language": "de", "stt_url": "",
+        "stt_autosend": False,
+        "tts_url": "http://127.0.0.1:8000/tts", "tts_voice": "senol1", "tts_language": "de",
+        "tts_start": "cd ~/voxcpm-tts && ./.venv/bin/python api.py", "tts_auto": False,
         "drive_index": True,                      # Dateisuche: /mnt täglich im Hintergrund indizieren
     },
 }
