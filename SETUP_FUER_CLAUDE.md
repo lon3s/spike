@@ -31,8 +31,8 @@ Falls `.venv/` mitkopiert wurde: löschen (`rm -rf .venv`). Die venv ist an den 
 ## 3. App installieren
 
 ```bash
-./install.sh             # mit Browser-Werkzeug (Playwright + Chromium, ca. 120 MB)
-# ./install.sh --no-browser
+./install.sh --autostart   # mit Browser-Werkzeug und Autostart im Tray (Nutzer wünscht Autostart)
+# ./install.sh --no-browser   (ohne Playwright/Chromium, ca. 120 MB gespart)
 ```
 
 Das Skript legt `.venv` an, installiert PySide6 (falls nicht systemweit vorhanden) und Playwright und erstellt
@@ -60,10 +60,16 @@ Wenn auf diesem PC selbst ein llama-server laufen soll, der von den anderen PCs 
 `llama-server -m <modell.gguf> --host 0.0.0.0 --port <port> --jinja -c <kontext>`
 (`--jinja` wird für Tool-Calling gebraucht). Eventuell muss der Port in der Firewall freigegeben werden.
 
+Falls der Nutzer `config.json` und den Ordner `tools/` vom ersten PC mitgebracht hat (z. B. im Ordner
+`mitgebracht/`), nach `~/.config/spike/` kopieren (vorher spike beenden: `spike --quit`).
+
 ## 5. Start
 
 ```bash
-spike
+spike            # großes Fenster; das Tray-Symbol erscheint unten rechts
 ```
+
+Das Tray-Popup wird per KDE layer-shell unten rechts angedockt (Paket `layer-shell-qt`, bei KDE Plasma 6
+vorhanden). Auf anderen Desktops wird es normal platziert.
 
 Weitere Details stehen in `README.md`.
