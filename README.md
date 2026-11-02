@@ -67,7 +67,8 @@ curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thors
   Popup mit 🌐 Übersetzen, ✏ Korrigieren, 💡 Erklären, 📝 Zusammenfassen, ↩ Antwort formulieren – oder eigene
   Anweisung tippen. Läuft ohne Werkzeuge und ohne Denken (schnell); Übersetzung, Korrektur und Antwort landen
   automatisch in der Zwischenablage. Tastenkürzel: Systemeinstellungen → Tastatur → Kurzbefehle → „Neu hinzufügen“ →
-  „Befehl oder Skript“ → `spike --text`.
+  „Befehl oder Skript“ → **vollen Pfad** eintragen: `/home/<nutzer>/.local/bin/spike --text` (KDE findet `~/.local/bin`
+  sonst nicht: „Programm spike ist nicht auffindbar“).
 - **Rückgängig**: Vor jedem `edit_file`/`write_file` wird der alte Stand gesichert (`~/.local/share/spike/backups`).
   „↶ Rückgängig“ an der Diff-Karte oder `/undo` stellt ihn wieder her; wurde die Datei seitdem anders geändert, fragt
   spike nach. Das Modell erfährt, dass die Änderung zurückgenommen wurde.
@@ -133,7 +134,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 - Das große Fenster schließen beendet spike nicht, es läuft im Tray weiter. Beenden geht über das Tray-Menü.
 - Es läuft immer nur ein spike. `spike` holt das Fenster nach vorn, `spike --popup` schaltet das Popup um,
   `spike --tray` startet nur im Tray, `spike --text` bearbeitet markierten Text, `spike --quit` beendet.
-- Tastenkürzel (KDE): Systemeinstellungen → Tastatur → Kurzbefehle → „Neu“ → Befehl → `spike --popup`.
+- Tastenkürzel (KDE): Systemeinstellungen → Tastatur → Kurzbefehle → „Neu“ → Befehl → `/home/<nutzer>/.local/bin/spike --popup` (voller Pfad!).
 - Autostart: `./install.sh --autostart` (Entfernen: `rm ~/.config/autostart/spike.desktop`).
 - Unter KDE/Wayland wird das Popup per layer-shell angedockt. Auf anderen Desktops wird es unten rechts platziert.
 
