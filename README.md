@@ -45,6 +45,26 @@ llama-server -m modell.gguf --host 0.0.0.0 --port 8080 --jinja -c 16384
 
 Ollama: `http://ip:11434`. OpenAI: `https://api.openai.com` plus API-Key.
 
+## Eigene Werkzeuge (Plugins)
+
+Jede `.py`-Datei in `~/.config/spike/tools/` wird beim Start geladen. Ein Werkzeug sieht so aus:
+
+```python
+from spike.plugins import tool
+
+@tool("Aktuelles Wetter für einen Ort.", params={"ort": "Stadt"}, label="Wetter")
+def wetter(ort: str, ctx) -> str:
+    return ctx.http_get(f"https://wttr.in/{ort}?format=3", headers={"User-Agent": "curl/8"})
+```
+
+- Die Parameter liest spike aus der Funktion (`str`, `int`, `float`, `bool`, `list`). Parameter ohne Standardwert sind Pflicht.
+- Über `ctx` hat ein Plugin Zugriff auf `http_get`, `html_to_text`, `run("befehl")`, `confirm("Frage?")` und `settings`.
+- Mit `confirm=True` fragt spike vor jedem Aufruf nach. Die Rückgabe wird automatisch gekürzt.
+- Danach: ⚙ Einstellungen → Allgemein → „Plugins neu laden“, Einstellungen neu öffnen und das Werkzeug im Profil anhaken.
+- Dateien, die mit `_` beginnen, werden ignoriert. `_vorlage.py` ist die kommentierte Vorlage.
+- Mitgeliefert: `wetter`, `rechner` (exakte Mathematik) und `system_info` (CPU, RAM, Platten, GPU). Sie stehen unter `examples/plugins/` und
+  werden beim ersten Start in den Ordner kopiert.
+
 ## Bedienung
 
 - Enter sendet, Shift+Enter macht eine neue Zeile, Strg+N startet einen neuen Chat, Esc stoppt.

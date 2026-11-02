@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 
+from . import plugins
+
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
 
@@ -100,8 +102,9 @@ def html_to_text(src: str) -> str:
     return t.strip()
 
 
-def http_get(url: str, timeout=20) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "de,en;q=0.8"})
+def http_get(url: str, timeout=20, headers: dict | None = None) -> str:
+    url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")   # Umlaute/Leerzeichen erlauben
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "de,en;q=0.8", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read(3_000_000)
         charset = r.headers.get_content_charset() or "utf-8"
@@ -231,6 +234,8 @@ class ToolBox:
 
     def run(self, name: str, args: dict, confirm) -> str:
         try:
+            if name in plugins.PLUGINS:
+                return clip(plugins.call(name, args, self, confirm), self.limit)
             fn = getattr(self, "t_" + name, None)
             if not fn:
                 return f"Fehler: unbekanntes Werkzeug '{name}'"
@@ -300,7 +305,23 @@ class ToolBox:
 
 
 def specs_for(names):
-    return [TOOL_SPECS[n] for n in names if n in TOOL_SPECS]
+    out = []
+    for n in names:
+        if n in TOOL_SPECS:
+            out.append(TOOL_SPECS[n])
+        elif n in plugins.PLUGINS:
+            out.append(plugins.PLUGINS[n]["spec"])
+    return out
+
+
+def all_tools():
+    """[(name, anzeigename)] – eingebaute Werkzeuge und geladene Plugins."""
+    return [(n, TOOL_LABELS.get(n, n)) for n in TOOL_SPECS] + \
+           [(n, p["label"]) for n, p in plugins.PLUGINS.items()]
+
+
+def load_plugins():
+    return plugins.load(set(TOOL_SPECS))
 
 
 def short_args(arguments: str, n=120) -> str:

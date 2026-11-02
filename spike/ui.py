@@ -2,8 +2,8 @@
 import copy
 import threading
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -15,7 +15,8 @@ from . import config as C
 from .agent import Agent
 from .client import get_n_ctx, list_models
 from .theme import THEMES, palette, qss, render_html, welcome_html
-from .tools import TOOL_LABELS, TOOL_SPECS, Browser, ToolBox
+from . import plugins
+from .tools import Browser, ToolBox, all_tools, load_plugins
 
 
 class InputBox(QPlainTextEdit):
@@ -202,8 +203,8 @@ class SettingsDialog(QDialog):
             grid = QWidget()
             g = QVBoxLayout(grid)
             g.setContentsMargins(0, 0, 0, 0)
-            for name in TOOL_SPECS:
-                cb = QCheckBox(TOOL_LABELS.get(name, name))
+            for name, label in all_tools():
+                cb = QCheckBox(label)
                 cb.toggled.connect(changed)
                 g.addWidget(cb)
                 boxes[name] = cb
@@ -241,6 +242,20 @@ class SettingsDialog(QDialog):
         f.addRow("Kontextgröße, falls Server sie nicht meldet", self.sp_ctx)
         f.addRow(self.cb_head)
         f.addRow(QLabel(f"Konfigurationsdatei: {C.CONFIG_FILE}"))
+        prow = QHBoxLayout()
+        b_open = QPushButton("Plugin-Ordner öffnen")
+        b_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(plugins.PLUGIN_DIR))))
+        b_reload = QPushButton("Plugins neu laden")
+        b_reload.clicked.connect(self._reload_plugins)
+        prow.addWidget(b_open)
+        prow.addWidget(b_reload)
+        prow.addStretch(1)
+        f.addRow("Plugins", prow)
+        self.plugin_label = QLabel()
+        self.plugin_label.setWordWrap(True)
+        self.plugin_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        f.addRow(self.plugin_label)
+        self._show_plugins()
         tabs.addTab(gen, "Allgemein")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -252,6 +267,19 @@ class SettingsDialog(QDialog):
 
         self._bridge = Bridge()
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _show_plugins(self):
+        names = ", ".join(plugins.PLUGINS) or "keine"
+        txt = f"Ordner: {plugins.PLUGIN_DIR}\nGeladen: {names}"
+        if plugins.ERRORS:
+            txt += "\n⚠ Fehler:\n" + "\n".join(plugins.ERRORS)
+        self.plugin_label.setText(txt)
+
+    def _reload_plugins(self):
+        load_plugins()
+        self._show_plugins()
+        self.plugin_label.setText(self.plugin_label.text() +
+                                  "\n(Neue Werkzeuge erscheinen in den Profilen nach erneutem Öffnen der Einstellungen.)")
 
     def _test(self):
         ep = self.ep_editor.current()
@@ -300,6 +328,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("spike")
         self.resize(1200, 820)
         self.cfg = C.load_config()
+        loaded, errors = load_plugins()
         self.browser = Browser()
         self.toolbox = ToolBox(self.cfg["settings"], self.browser)
         self.agent = None
@@ -443,6 +472,10 @@ class MainWindow(QMainWindow):
         else:
             self.chat_list.setCurrentRow(0)
         self.apply_compact()
+        if errors:
+            self.status.setText("⚠ Plugin-Fehler: " + " | ".join(errors))
+        elif loaded:
+            self.status.setText(f"Plugins geladen: {', '.join(loaded)}")
 
     # --- Design / Kompakt ---
     def apply_theme(self):
