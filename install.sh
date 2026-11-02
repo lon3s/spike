@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installiert spike für den aktuellen Benutzer (Arch/CachyOS, Debian/Ubuntu, Fedora …).
-# Aufruf:  ./install.sh            (mit Browser-Werkzeug)
-#          ./install.sh --no-browser
+# Aufruf:  ./install.sh                 (mit Browser-Werkzeug)
+#          ./install.sh --no-browser    (ohne Playwright/Chromium)
+#          ./install.sh --autostart     (zusätzlich beim Anmelden im Tray starten)
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 APP_DIR="$PWD"
@@ -22,7 +23,7 @@ else
   .venv/bin/pip install -q "PySide6>=6.5"
 fi
 
-if [ "${1:-}" != "--no-browser" ]; then
+if [[ " $* " != *" --no-browser "* ]]; then
   echo "→ installiere Playwright + Chromium (Browser-Werkzeug)"
   .venv/bin/pip install -q "playwright>=1.40"
   .venv/bin/python -m playwright install chromium || echo "⚠ Chromium-Download fehlgeschlagen – Browser-Werkzeuge gehen dann nicht."
@@ -41,10 +42,26 @@ Type=Application
 Name=spike
 Comment=Chat mit lokalen und entfernten LLMs (OpenAI-API) mit Werkzeugen
 Exec=$HOME/.local/bin/spike
-Icon=utilities-terminal
+Icon=spike
 Terminal=false
 Categories=Utility;Development;
 EOF
+
+mkdir -p "$HOME/.local/share/icons/hicolor/scalable/apps"
+cp "$APP_DIR/spike/assets/spike.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/spike.svg"
+
+# Autostart nur auf ausdrücklichen Wunsch (--autostart). Entfernen: rm ~/.config/autostart/spike.desktop
+if [[ " $* " == *" --autostart "* ]]; then
+  echo "→ Autostart im Tray eingerichtet"
+  mkdir -p "$HOME/.config/autostart"
+  cat > "$HOME/.config/autostart/spike.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=spike
+Exec=$HOME/.local/bin/spike --tray
+Icon=spike
+EOF
+fi
 
 echo
 echo "✅ Fertig. Starten über das Anwendungsmenü (\"spike\") oder im Terminal: spike"

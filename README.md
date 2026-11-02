@@ -65,6 +65,21 @@ def wetter(ort: str, ctx) -> str:
 - Mitgeliefert: `wetter`, `rechner` (exakte Mathematik) und `system_info` (CPU, RAM, Platten, GPU). Sie stehen unter `examples/plugins/` und
   werden beim ersten Start in den Ordner kopiert.
 
+## Tray und Popup
+
+spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
+
+- **Linksklick**: Das Chat-Popup erscheint unten rechts. Ein Klick daneben schließt es wieder.
+- **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat und Beenden.
+- **Mittelklick**: großes Fenster.
+- Im Popup öffnet ⤢ denselben Chat im großen Fenster, Esc schließt das Popup.
+- Das große Fenster schließen beendet spike nicht, es läuft im Tray weiter. Beenden geht über das Tray-Menü.
+- Es läuft immer nur ein spike. `spike` holt das Fenster nach vorn, `spike --popup` schaltet das Popup um,
+  `spike --tray` startet nur im Tray, `spike --quit` beendet.
+- Tastenkürzel (KDE): Systemeinstellungen → Tastatur → Kurzbefehle → „Neu“ → Befehl → `spike --popup`.
+- Autostart: `./install.sh --autostart` (Entfernen: `rm ~/.config/autostart/spike.desktop`).
+- Unter KDE/Wayland wird das Popup per layer-shell angedockt. Auf anderen Desktops wird es unten rechts platziert.
+
 ## Bedienung
 
 - Enter sendet, Shift+Enter macht eine neue Zeile, Strg+N startet einen neuen Chat, Esc stoppt.

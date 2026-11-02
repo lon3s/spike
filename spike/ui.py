@@ -1,8 +1,9 @@
 """Qt-Oberfläche."""
 import copy
 import threading
+import time
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
@@ -323,13 +324,15 @@ def _icon_btn(text, tip, slot):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, popup=False, ctrl=None):
         super().__init__()
+        self.popup, self.ctrl = popup, ctrl
+        self._hidden_at = 0.0
         self.setWindowTitle("spike")
         self.resize(1200, 820)
         self.cfg = C.load_config()
-        loaded, errors = load_plugins()
-        self.browser = Browser()
+        loaded, errors = (list(plugins.PLUGINS), list(plugins.ERRORS)) if ctrl else load_plugins()
+        self.browser = ctrl.browser if ctrl else Browser()
         self.toolbox = ToolBox(self.cfg["settings"], self.browser)
         self.agent = None
         self.n_ctx = {}          # endpoint-name -> n_ctx
@@ -457,7 +460,7 @@ class MainWindow(QMainWindow):
         self.statusBar().setSizeGripEnabled(False)
 
         for keys, slot in (("Ctrl+N", self.new_chat), ("Ctrl+K", self.toggle_compact),
-                           ("Ctrl+B", self.toggle_side), ("Escape", self.stop)):
+                           ("Ctrl+B", self.toggle_side), ("Escape", self.escape)):
             act = QAction(self)
             act.setShortcut(QKeySequence(keys))
             act.triggered.connect(slot)
@@ -495,8 +498,11 @@ class MainWindow(QMainWindow):
         C.save_config(self.cfg)
         self.apply_theme()
 
+    def is_compact(self):
+        return self.popup or bool(self.cfg["settings"].get("compact"))
+
     def apply_compact(self):
-        compact = bool(self.cfg["settings"].get("compact"))
+        compact = self.is_compact()
         self.side.setVisible(not compact and self.cfg["settings"].get("show_side", True))
         self.topbar.setVisible(not compact)
         self.statusBar().setVisible(not compact)
@@ -504,13 +510,23 @@ class MainWindow(QMainWindow):
         self.redraw()
 
     def toggle_compact(self):
+        if self.popup:      # im Popup: großes Fenster mit demselben Chat öffnen
+            if self.ctrl:
+                self.ctrl.show_main(self.chat["id"] if self.chat else None)
+            return
         self.cfg["settings"]["compact"] = not self.cfg["settings"].get("compact")
         C.save_config(self.cfg)
         self.apply_compact()
         self.input.setFocus()
 
+    def escape(self):
+        if self.agent:
+            self.stop()
+        elif self.popup:
+            self.hide()
+
     def toggle_side(self):
-        if self.cfg["settings"].get("compact"):
+        if self.is_compact():
             return
         self.cfg["settings"]["show_side"] = not self.cfg["settings"].get("show_side", True)
         C.save_config(self.cfg)
@@ -588,6 +604,20 @@ class MainWindow(QMainWindow):
             self.chat["profile"] = self.cb_profile.currentText()
 
     # --- Chats ---
+    def select_chat(self, chat_id):
+        """Chatliste neu einlesen und einen Chat öffnen (z. B. aus dem Popup übernommen)."""
+        if self.agent:
+            return
+        self._load_chat_list()
+        for i in range(self.chat_list.count()):
+            if self.chat_list.item(i).data(Qt.UserRole) == chat_id:
+                self.chat_list.setCurrentRow(i)
+                self.chat = C.load_chat(chat_id)
+                self.redraw(force_bottom=True)
+                return
+        if self.chat_list.count():
+            self.chat_list.setCurrentRow(0)
+
     def _load_chat_list(self):
         self.chat_list.blockSignals(True)
         self.chat_list.clear()
@@ -687,7 +717,7 @@ class MainWindow(QMainWindow):
 
     def _info(self, text):
         self.status.setText(text)
-        if self.cfg["settings"].get("compact"):
+        if self.is_compact():
             self.input.setPlaceholderText(text or "Nachricht schreiben …")
 
     def _confirm(self, text):
@@ -718,7 +748,7 @@ class MainWindow(QMainWindow):
         if not msgs and live is None:
             self.view.setHtml(welcome_html(self.colors))
             return
-        self.view.setHtml(render_html(msgs, live, self.colors, bool(self.cfg["settings"].get("compact"))))
+        self.view.setHtml(render_html(msgs, live, self.colors, self.is_compact()))
         if at_bottom:
             sb.setValue(sb.maximum())
 
@@ -734,21 +764,40 @@ class MainWindow(QMainWindow):
             self.apply_theme()
             self.refresh_models()
 
+    def changeEvent(self, e):
+        # Popup schließt sich, sobald man daneben klickt (wie das Lautstärke-Popup)
+        if self.popup and e.type() == QEvent.ActivationChange and not self.isActiveWindow():
+            QTimer.singleShot(120, self._maybe_autohide)
+        super().changeEvent(e)
+
+    def _maybe_autohide(self):
+        if self.isVisible() and not self.isActiveWindow() and QApplication.activeModalWidget() is None \
+                and QApplication.activeWindow() is None:
+            self.hide()
+
+    def hideEvent(self, e):
+        self._hidden_at = time.monotonic()
+        if self.chat and self.chat["messages"] and not self.agent:
+            C.save_chat(self.chat)
+        super().hideEvent(e)
+
     def closeEvent(self, e):
-        if self.agent:
-            self.agent.stop()
         if self.chat and self.chat["messages"]:
             C.save_chat(self.chat)
-        self.browser.shutdown()
+        if self.ctrl and self.ctrl.tray_active():
+            e.ignore()          # bleibt im Tray
+            self.hide()
+            return
+        if self.agent:
+            self.agent.stop()
         super().closeEvent(e)
+        if self.ctrl:
+            self.ctrl.quit()          # kein Tray vorhanden → Programm beenden
+        else:
+            self.browser.shutdown()
+
 
 
 def main():
-    import sys
-    app = QApplication(sys.argv)
-    app.setApplicationName("spike")
-    app.setDesktopFileName("spike")
-    app.setStyle("Fusion")
-    w = MainWindow()
-    w.show()
-    sys.exit(app.exec())
+    from .tray import main as tray_main
+    tray_main()

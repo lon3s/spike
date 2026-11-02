@@ -38,6 +38,7 @@ def qss(c) -> str:
     return f"""
     QWidget {{ color: {c['text']}; font-size: 10.5pt; }}
     QMainWindow, QDialog {{ background: {c['bg']}; }}
+    QMainWindow#Popup {{ border: 1px solid {c['border']}; }}
     #Side {{ background: {c['panel']}; border-right: 1px solid {c['border']}; }}
     #TopBar {{ background: {c['bg']}; border-bottom: 1px solid {c['border']}; }}
     #Composer {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 14px; }}
