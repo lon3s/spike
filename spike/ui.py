@@ -55,6 +55,8 @@ class InputBox(QPlainTextEdit):
 
 class Bridge(QObject):
     models_loaded = Signal(str, list, int, str)   # endpoint, models, n_ctx, error
+    shell_update = Signal()                       # !-Befehl: neue Ausgabe
+    shell_done = Signal()
 
 
 # ---------- Einstellungen ----------
@@ -687,6 +689,9 @@ class MainWindow(QMainWindow):
         self.colors = THEMES["dark"]
         self.bridge = Bridge()
         self.bridge.models_loaded.connect(self._models_loaded)
+        self.bridge.shell_update.connect(self.redraw)
+        self.bridge.shell_done.connect(self._shell_done)
+        self._shell_running = False
 
         # --- Seitenleiste ---
         self.side = QWidget()
@@ -748,9 +753,11 @@ class MainWindow(QMainWindow):
 
         # --- Chat + Eingabe ---
         self.view = ChatView()
+        self.view.on_confirm = self._confirm_choice
         self.input = InputBox()
         self.input.setPlaceholderText("Nachricht schreiben …")
-        self.input.setToolTip("Enter = senden · Shift+Enter = neue Zeile · Esc = Stopp")
+        self.input.setToolTip("Enter = senden · Shift+Enter = neue Zeile · Esc = Stopp\n"
+                              "/ = Befehle · !befehl = im Terminal ausführen")
         self.input.submitted.connect(self.send)
         self.btn_send = QPushButton("➤")
         self.btn_send.setObjectName("Primary")
@@ -936,6 +943,8 @@ class MainWindow(QMainWindow):
     def escape(self):
         if self.cmd_list.isVisible():
             self.cmd_list.hide()
+        elif self._shell_running:
+            self.stop()
         elif self.agent:
             self.stop()
         elif self.popup:
@@ -1117,7 +1126,18 @@ class MainWindow(QMainWindow):
 
     def send(self):
         text = self.input.toPlainText().strip()
+        if self.agent and self.agent.pending:
+            if text:      # Text während einer Freigabe = „Nein, mach stattdessen …“
+                self.input.clear()
+                self.agent.answer(False, reason=text)
+            return
         if text.startswith("/") and self.run_command(text):
+            return
+        if text.startswith("!") and len(text) > 1:
+            self.run_user_shell(text[1:].strip())
+            return
+        if self._shell_running:
+            self._info("Warte, bis der Terminal-Befehl fertig ist (Stopp bricht ab)")
             return
         if not text or self.agent or self.chat is None:
             return
@@ -1147,6 +1167,8 @@ class MainWindow(QMainWindow):
         self.agent.start()
 
     def stop(self):
+        if self._shell_running:
+            self.toolbox.kill()
         if self.agent:
             self.agent.stop()
             self.status.setText("Abbruch …")
@@ -1157,9 +1179,65 @@ class MainWindow(QMainWindow):
             self.input.setPlaceholderText(text or "Nachricht schreiben …")
 
     def _confirm(self, text):
-        ok = QMessageBox.question(self, "Bestätigen", text) == QMessageBox.Yes
-        if self.agent:
-            self.agent.answer(ok)
+        """Freigabe erscheint als Karte im Chat (ChatView) – hier nur nach vorn holen und Hinweis zeigen."""
+        self.redraw(force_bottom=True)
+        self._info("🔐 Wartet auf deine Freigabe")
+        if self.isVisible() and not self.isActiveWindow():
+            self.raise_()
+            self.activateWindow()
+
+    def _confirm_choice(self, choice):
+        if self.agent and self.agent.pending:
+            self.agent.answer(choice != "no", remember=(choice == "always"))
+            self._info("")
+            self.input.setFocus()
+
+    # --- !befehl: selbst im Terminal ausführen ---
+    def run_user_shell(self, cmd):
+        if self.agent or self._shell_running or self.chat is None:
+            self._info("Bitte warten, bis die Antwort fertig ist")
+            return
+        self.input.clear()
+        sh = {"cmd": cmd, "cwd": str(self.toolbox.cwd), "out": "", "running": True}
+        msg = {"role": "user", "content": "", "_shell": sh}
+        self.chat["messages"].append(msg)
+        if self.chat["title"] == "Neuer Chat":
+            self.chat["title"] = ("$ " + cmd)[:45]
+            it = self.chat_list.currentItem()
+            if it:
+                it.setText(self.chat["title"])
+        self._shell_running = True
+        self.btn_send.hide()
+        self.btn_stop.show()
+        self.redraw(force_bottom=True)
+        last = [0.0]
+
+        def on_out(text):
+            sh["out"] = (sh["out"] + text)[-50000:]
+            if time.monotonic() - last[0] > 0.05:
+                last[0] = time.monotonic()
+                self.bridge.shell_update.emit()
+
+        def job():
+            try:
+                rc, out = self.toolbox.shell(cmd, on_output=on_out)
+            except Exception as e:
+                rc, out = -1, f"Fehler: {e}"
+            sh.update(out=out, exit=rc, running=False)
+            limit = int(self.cfg["settings"].get("tool_output_max_chars", 6000))
+            msg["content"] = (f"[Ich habe selbst im Terminal ausgeführt]\n{sh['cwd']}$ {cmd}\n"
+                              f"{T.clip_tail(out, limit)}\nexit={rc}")
+            self.bridge.shell_done.emit()
+        threading.Thread(target=job, daemon=True).start()
+
+    def _shell_done(self):
+        self._shell_running = False
+        self.btn_stop.hide()
+        self.btn_send.show()
+        C.save_chat(self.chat)
+        self.redraw()
+        self._estimate()
+        self.input.setFocus()
 
     def _stats(self, text, used, n_ctx):
         if n_ctx:
@@ -1422,7 +1500,8 @@ class MainWindow(QMainWindow):
         if force_bottom:
             self.view.scroll_bottom()
         self.view.render(msgs, live, self.colors, self.is_compact(),
-                         int((self.chat or {}).get("summary_upto") or 0), (self.chat or {}).get("summary", ""))
+                         int((self.chat or {}).get("summary_upto") or 0), (self.chat or {}).get("summary", ""),
+                         self.agent.pending if self.agent else None, self.agent.live_tool if self.agent else None)
 
     # --- Einstellungen ---
     def open_settings(self):

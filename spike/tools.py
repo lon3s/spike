@@ -45,7 +45,8 @@ TOOL_SPECS = {
                         {"id": {"type": "integer"}, "text": {"type": "string"},
                          "submit": {"type": "boolean"}}, ["id", "text"]),
     "browser_back": _fn("browser_back", "Geht im Browser eine Seite zurück."),
-    "run_shell": _fn("run_shell", "Führt einen Shell-Befehl aus (Nutzer muss bestätigen).",
+    "run_shell": _fn("run_shell", "Führt einen bash-Befehl aus (Nutzer bestätigt). Kein interaktives Programm "
+                     "(kein sudo-Passwort, kein vim/less). „cd“ bleibt für folgende Befehle erhalten.",
                      {"command": {"type": "string"}}, ["command"]),
     "read_file": _fn("read_file", "Liest eine Textdatei (ab offset).",
                      {"path": {"type": "string"}, "offset": {"type": "integer"}}, ["path"]),
@@ -87,6 +88,15 @@ TOOL_LABELS = {
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
 }
+
+
+def clip_tail(text: str, limit: int) -> str:
+    """Für Befehlsausgaben: Anfang und vor allem das Ende behalten (dort stehen meist die Fehler)."""
+    if len(text) <= limit:
+        return text
+    head = limit // 4
+    tail = limit - head
+    return text[:head] + f"\n[... {len(text) - limit} Zeichen in der Mitte ausgelassen ...]\n" + text[-tail:]
 
 
 def clip(text: str, limit: int, offset: int = 0) -> str:
@@ -310,6 +320,65 @@ class ToolBox:
     def __init__(self, settings: dict, browser: Browser):
         self.settings = settings
         self.browser = browser
+        self.cwd = Path.home()        # merkt sich „cd“ zwischen Befehlen (Modell und !-Befehle)
+        self.on_output = None         # fn(text) – Live-Ausgabe laufender Befehle
+        self._proc = None
+
+    # --- Shell mit Live-Ausgabe ---
+    _CWD_MARK = "\x1eSPIKE_CWD:"
+
+    def shell(self, command, timeout=None, on_output=None):
+        """Führt einen Befehl in bash aus. Gibt (exit_code, ausgabe) zurück; ausgabe läuft live an on_output."""
+        import signal
+        import threading as _th
+        timeout = timeout or int(self.settings.get("shell_timeout", 300))
+        script = (f"{command}\n__spike_rc=$?\nprintf '{self._CWD_MARK}%s\\n' \"$PWD\"\nexit $__spike_rc")
+        cwd = self.cwd if Path(self.cwd).is_dir() else Path.home()
+        env = {**os.environ, "TERM": "dumb", "PAGER": "cat", "GIT_PAGER": "cat", "SYSTEMD_PAGER": "cat",
+               "NO_COLOR": "1"}
+        p = subprocess.Popen(["bash", "-c", script], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1,
+                             start_new_session=True, env=env)
+        self._proc = p
+        out, new_cwd = [], [None]
+
+        def reader():
+            for line in p.stdout:
+                i = line.find(self._CWD_MARK)
+                if i >= 0:     # Markierung kann an einer Zeile ohne Zeilenende hängen
+                    new_cwd[0] = line[i + len(self._CWD_MARK):].strip()
+                    line = line[:i]
+                    if not line:
+                        continue
+                out.append(line)
+                if on_output:
+                    on_output(line)
+        t = _th.Thread(target=reader, daemon=True)
+        t.start()
+        timed_out = False
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+        t.join(timeout=2)
+        self._proc = None
+        if new_cwd[0] and Path(new_cwd[0]).is_dir():
+            self.cwd = Path(new_cwd[0])
+        text = "".join(out).rstrip("\n")
+        if timed_out:
+            text += f"\n[abgebrochen nach {timeout} s]"
+        return p.returncode, text
+
+    def kill(self):
+        import signal
+        p = self._proc
+        if p and p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
     @property
     def limit(self):
@@ -366,8 +435,8 @@ class ToolBox:
     def t_run_shell(self, command, confirm=None):
         if not confirm(f"Shell-Befehl ausführen?\n\n{command}"):
             return "Vom Nutzer abgelehnt."
-        p = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=180, cwd=Path.home())
-        return clip(f"exit={p.returncode}\n{p.stdout}{p.stderr}", self.limit)
+        rc, out = self.shell(command, on_output=self.on_output)
+        return f"exit={rc} · Ordner: {self.cwd}\n" + clip_tail(out, self.limit)
 
     def t_read_file(self, path, offset=0, confirm=None):
         return clip(Path(path).expanduser().read_text("utf-8", "replace"), self.limit, offset)

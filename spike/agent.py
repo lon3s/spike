@@ -36,6 +36,11 @@ class Agent(QObject):
         self._ev = threading.Event()
         self._answer = False
         self._last_emit = 0.0
+        self.pending = None       # offene Freigabe: {"text", "key", "label"} – wird im Chat als Karte gezeigt
+        self.live_tool = None     # laufendes Werkzeug: {"id", "out"} – Live-Ausgabe im Terminal-Block
+        self._cur = ("", {})
+        self._remember = False
+        self._reason = ""
 
     # --- Steuerung ---
     def start(self):
@@ -72,18 +77,49 @@ class Agent(QObject):
         self.stopped = True
         self._answer = False
         self._ev.set()
+        self.toolbox.kill()
 
-    def answer(self, ok: bool):
-        self._answer = ok
+    def answer(self, ok: bool, remember=False, reason=""):
+        self._answer, self._remember, self._reason = ok, remember, reason
         self._ev.set()
+
+    # Was „Immer erlauben“ freischaltet: bei Shell-Befehlen nur dasselbe Programm, sonst das Werkzeug
+    def _allow_key(self):
+        name, args = self._cur
+        if name == "run_shell":
+            words = [w for w in str(args.get("command", "")).split() if w not in ("sudo", "env")]
+            return f"run_shell:{words[0]}" if words else ""
+        if name == "pc":
+            return f"pc:{args.get('action', '')}"
+        return name
+
+    @staticmethod
+    def allow_label(key):
+        if key.startswith("run_shell:"):
+            return f"Befehle mit „{key.split(':', 1)[1]}“"
+        if key.startswith("pc:"):
+            return {"pc:open": "Öffnen von Dateien/Programmen"}.get(key, key)
+        return {"write_file": "Dateien schreiben", "python_run": "Python ausführen"}.get(key, key)
 
     def _confirm(self, text) -> bool:
         if self.stopped:
             return False
+        key = self._allow_key()
+        if key and key in self.chat.get("allow", []):
+            return True
+        short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
+                 {"pc:open": "Öffnen", "write_file": "Dateien schreiben", "python_run": "Python"}.get(key, key[:18]))
+        self.pending = {"text": text, "key": key, "label": self.allow_label(key) if key else "", "short": short}
         self._ev.clear()
+        self._tick(force=True)
         self.confirm_request.emit(text)
         self._ev.wait()
-        return self._answer and not self.stopped
+        self.pending = None
+        ok = self._answer and not self.stopped
+        if ok and self._remember and key:
+            self.chat.setdefault("allow", []).append(key)
+        self._tick(force=True)
+        return ok
 
     def _tick(self, force=False):
         now = time.monotonic()
@@ -252,7 +288,20 @@ class Agent(QObject):
                         if not isinstance(args, dict):
                             raise ValueError
                         self.info.emit(f"🔧 {name} läuft …")
-                        result = self.toolbox.run(name, args, self._confirm)
+                        self._cur, self._reason = (name, args), ""
+                        self.live_tool = {"id": c["id"], "out": ""}
+
+                        def on_out(text, lt=self.live_tool):
+                            lt["out"] = (lt["out"] + text)[-20000:]
+                            self._tick()
+                        self.toolbox.on_output = on_out
+                        try:
+                            result = self.toolbox.run(name, args, self._confirm)
+                        finally:
+                            self.toolbox.on_output = None
+                            self.live_tool = None
+                        if self._reason and result.startswith("Vom Nutzer abgelehnt"):
+                            result = f"Vom Nutzer abgelehnt. Er schreibt dazu: {self._reason}"
                     except (json.JSONDecodeError, ValueError):
                         result = "Fehler: Argumente sind kein gültiges JSON-Objekt."
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "name": name, "content": result})

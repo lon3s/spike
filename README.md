@@ -96,6 +96,17 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 
 ## Bedienung
 
+### Freigaben und Terminal
+
+- Will das Modell etwas am System tun (Shell, Datei schreiben, Python, Öffnen), erscheint im Chat eine Karte:
+  **Erlauben**, **Immer: …** (in diesem Chat nicht mehr fragen, bei Shell nur für dasselbe Programm, z. B. `git`)
+  oder **Ablehnen**. Schreibst du stattdessen etwas ins Eingabefeld, wird abgelehnt und das Modell bekommt deinen
+  Hinweis („nein, nimm lieber …“).
+- Shell-Befehle erscheinen als Terminal-Block mit Live-Ausgabe und Exit-Code. Stopp/Esc bricht einen Befehl ab.
+- `!befehl` führt selbst etwas im Terminal aus (wie in Claude Code). Die Ausgabe sieht das Modell bei der nächsten
+  Frage. `cd` bleibt erhalten, auch für die Befehle des Modells. Interaktive Programme (sudo-Passwort, vim, less)
+  gehen nicht.
+
 ### Befehle
 
 `/` im Eingabefeld zeigt eine Liste. ↑/↓ wählen, Tab ergänzt, Enter führt aus. Bei `/profil`, `/modell` und
