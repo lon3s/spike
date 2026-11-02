@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installiert Spike für den aktuellen Benutzer (Arch/CachyOS, Debian/Ubuntu, Fedora …).
+# Installiert spike für den aktuellen Benutzer (Arch/CachyOS, Debian/Ubuntu, Fedora …).
 # Aufruf:  ./install.sh            (mit Browser-Werkzeug)
 #          ./install.sh --no-browser
 set -euo pipefail
@@ -38,7 +38,7 @@ chmod +x "$HOME/.local/bin/spike"
 cat > "$HOME/.local/share/applications/spike.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Spike
+Name=spike
 Comment=Chat mit lokalen und entfernten LLMs (OpenAI-API) mit Werkzeugen
 Exec=$HOME/.local/bin/spike
 Icon=utilities-terminal
@@ -47,5 +47,5 @@ Categories=Utility;Development;
 EOF
 
 echo
-echo "✅ Fertig. Starten über das Anwendungsmenü (\"Spike\") oder im Terminal: spike"
+echo "✅ Fertig. Starten über das Anwendungsmenü (\"spike\") oder im Terminal: spike"
 echo "   Konfiguration: ~/.config/spike/config.json  (kann zwischen PCs kopiert werden)"

@@ -297,7 +297,7 @@ def _icon_btn(text, tip, slot):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Spike")
+        self.setWindowTitle("spike")
         self.resize(1200, 820)
         self.cfg = C.load_config()
         self.browser = Browser()
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         self.side = QWidget()
         self.side.setObjectName("Side")
         self.side.setFixedWidth(250)
-        title = QLabel("✦  Spike")
+        title = QLabel("✦  spike")
         title.setStyleSheet("font-size: 13pt; font-weight: 700; padding: 4px 2px;")
         btn_new = QPushButton("+  Neuer Chat")
         btn_new.setObjectName("Primary")

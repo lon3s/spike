@@ -1,6 +1,6 @@
-# Anleitung für Claude Code: Spike auf diesem PC einrichten und auf GitHub hochladen
+# Anleitung für Claude Code: spike auf diesem PC einrichten und auf GitHub hochladen
 
-Dieser Ordner enthält die App **Spike**, eine Python/Qt-Desktop-App zum Chatten mit OpenAI-kompatiblen
+Dieser Ordner enthält die App **spike**, eine Python/Qt-Desktop-App zum Chatten mit OpenAI-kompatiblen
 LLM-Servern mit Werkzeugen. Er ist bereits ein Git-Repo mit Branch `main` und mindestens einem Commit.
 Der Ordner wurde von einem anderen PC hierher kopiert.
 
@@ -36,7 +36,7 @@ Falls `.venv/` mitkopiert wurde: löschen (`rm -rf .venv`). Die venv ist an den 
 ```
 
 Das Skript legt `.venv` an, installiert PySide6 (falls nicht systemweit vorhanden) und Playwright und erstellt
-den Befehl `spike` (`~/.local/bin`) sowie einen Menüeintrag „Spike“.
+den Befehl `spike` (`~/.local/bin`) sowie einen Menüeintrag „spike“.
 
 ## 4. Endpunkte konfigurieren
 
