@@ -63,6 +63,14 @@ mkdir -p ~/.local/share/spike/piper && cd ~/.local/share/spike/piper
 curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx
 curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json
 ```
+- **Markierten Text bearbeiten**: Text irgendwo markieren, Tastenkürzel für `spike --text` drücken (oder Tray-Menü) →
+  Popup mit 🌐 Übersetzen, ✏ Korrigieren, 💡 Erklären, 📝 Zusammenfassen, ↩ Antwort formulieren – oder eigene
+  Anweisung tippen. Läuft ohne Werkzeuge und ohne Denken (schnell); Übersetzung, Korrektur und Antwort landen
+  automatisch in der Zwischenablage. Tastenkürzel: Systemeinstellungen → Tastatur → Kurzbefehle → „Neu hinzufügen“ →
+  „Befehl oder Skript“ → `spike --text`.
+- **Rückgängig**: Vor jedem `edit_file`/`write_file` wird der alte Stand gesichert (`~/.local/share/spike/backups`).
+  „↶ Rückgängig“ an der Diff-Karte oder `/undo` stellt ihn wieder her; wurde die Datei seitdem anders geändert, fragt
+  spike nach. Das Modell erfährt, dass die Änderung zurückgenommen wurde.
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
@@ -124,7 +132,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 - 📌 im Popup heftet es an: Es bleibt offen, auch wenn du woanders klickst. Ein zweiter Klick löst es wieder.
 - Das große Fenster schließen beendet spike nicht, es läuft im Tray weiter. Beenden geht über das Tray-Menü.
 - Es läuft immer nur ein spike. `spike` holt das Fenster nach vorn, `spike --popup` schaltet das Popup um,
-  `spike --tray` startet nur im Tray, `spike --quit` beendet.
+  `spike --tray` startet nur im Tray, `spike --text` bearbeitet markierten Text, `spike --quit` beendet.
 - Tastenkürzel (KDE): Systemeinstellungen → Tastatur → Kurzbefehle → „Neu“ → Befehl → `spike --popup`.
 - Autostart: `./install.sh --autostart` (Entfernen: `rm ~/.config/autostart/spike.desktop`).
 - Unter KDE/Wayland wird das Popup per layer-shell angedockt. Auf anderen Desktops wird es unten rechts platziert.
@@ -160,6 +168,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/aufgaben` | geplante Erinnerungen/Aufgaben |
 | `/vorlesen [Text]` | letzte Antwort vorlesen |
 | `/stimme <Name>` | Piper-Stimme wechseln |
+| `/undo` | letzte Dateiänderung rückgängig machen |
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/stop` | Antwort abbrechen |

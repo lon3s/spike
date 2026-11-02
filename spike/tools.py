@@ -118,6 +118,44 @@ TOOL_LABELS = {
 }
 
 
+# ---------- Rückgängig: Sicherung vor jeder Dateiänderung ----------
+
+def _backup_dir():
+    from .config import DATA_DIR
+    return DATA_DIR / "backups"
+
+
+def backup_file(path: Path, new_content: str) -> dict:
+    """Sichert den alten Stand (oder merkt sich, dass die Datei neu ist). Gibt Infos fürs Rückgängigmachen."""
+    import hashlib
+    import time as _t
+    import uuid as _u
+    info = {"path": str(path), "existed": path.exists(), "backup": "",
+            "new_hash": hashlib.sha256(new_content.encode("utf-8")).hexdigest(), "time": _t.time()}
+    if path.exists():
+        d = _backup_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        b = d / f"{_t.strftime('%Y%m%d-%H%M%S')}-{_u.uuid4().hex[:6]}-{path.name}"
+        shutil.copy2(path, b)
+        info["backup"] = str(b)
+    return info
+
+
+def undo_change(info: dict, force=False) -> str:
+    """Stellt den Stand vor der Änderung wieder her. Wirft ValueError, wenn die Datei seitdem verändert wurde."""
+    import hashlib
+    p = Path(info["path"])
+    if p.exists() and not force:
+        cur = hashlib.sha256(p.read_bytes()).hexdigest()
+        if cur != info.get("new_hash"):
+            raise ValueError(f"{p.name} wurde seit der Änderung weiter verändert")
+    if info.get("existed"):
+        shutil.copy2(info["backup"], p)
+        return f"{p} wiederhergestellt"
+    p.unlink(missing_ok=True)
+    return f"{p} gelöscht (war neu angelegt)"
+
+
 def make_diff(old: str, new: str, name: str, context=3, max_lines=400) -> str:
     """Unified Diff (für Freigabe-Karte und Chat)."""
     import difflib
@@ -380,6 +418,7 @@ class ToolBox:
         self.cwd = Path.home()        # merkt sich „cd“ zwischen Befehlen (Modell und !-Befehle)
         self.on_output = None         # fn(text) – Live-Ausgabe laufender Befehle
         self.last_diff = ""           # Diff der letzten Dateiänderung (Anzeige im Chat)
+        self.last_undo = None         # Sicherung der letzten Dateiänderung (für Rückgängig)
         self.vision = False           # versteht das Modell Bilder?
         self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
 
@@ -569,6 +608,7 @@ class ToolBox:
         diff = make_diff(text, updated, str(p))
         if not confirm(f"Datei ändern?\n\n{p}", diff=diff):
             return "Vom Nutzer abgelehnt."
+        self.last_undo = backup_file(p, updated)
         p.write_text(updated, "utf-8")
         self.last_diff = diff
         first = text[:text.index(old)].count("\n") + 1
@@ -609,6 +649,7 @@ class ToolBox:
         if not confirm(f"{what}\n\n{p} ({len(content)} Zeichen)", diff=diff):
             return "Vom Nutzer abgelehnt."
         p.parent.mkdir(parents=True, exist_ok=True)
+        self.last_undo = backup_file(p, content)
         p.write_text(content, "utf-8")
         self.last_diff = diff
         return f"Geschrieben: {p} ({len(content)} Zeichen)"

@@ -337,6 +337,7 @@ class Agent(QObject):
                         self.info.emit(f"🔧 {name} läuft …")
                         self._cur, self._reason = (name, args), ""
                         self.toolbox.last_diff = ""
+                        self.toolbox.last_undo = None
                         self.live_tool = {"id": c["id"], "out": ""}
 
                         def on_out(text, lt=self.live_tool):
@@ -356,6 +357,9 @@ class Agent(QObject):
                 if self.toolbox.last_diff:
                     tmsg["_diff"] = self.toolbox.last_diff      # nur Anzeige
                     self.toolbox.last_diff = ""
+                if self.toolbox.last_undo:
+                    tmsg["_undo"] = self.toolbox.last_undo      # für ↶ Rückgängig / /undo
+                    self.toolbox.last_undo = None
                 msgs.append(tmsg)
                 for att in self.toolbox.take_images():          # z. B. Screenshot-Werkzeug
                     pending_images.append(att)

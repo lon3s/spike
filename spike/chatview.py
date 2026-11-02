@@ -382,7 +382,7 @@ def diff_view(diff, max_lines=30):
     return lb
 
 
-def diff_card(path, diff, result, c):
+def diff_card(path, diff, result, c, undo=None, undone=False, on_undo=None):
     """Erledigte Dateiänderung im Chat: Pfad, +/−-Zähler, farbiger Diff."""
     card = QFrame()
     card.setObjectName("Term")
@@ -398,7 +398,20 @@ def diff_card(path, diff, result, c):
                   f'<span style="color:#ff7b72">−{minus}</span>')
     head.setTextFormat(Qt.RichText)
     head.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
-    lay.addWidget(head)
+    row = QHBoxLayout()
+    row.addWidget(head, 1)
+    if undone:
+        st = QLabel(f'<span style="color:{TERM["muted"]}">↶ rückgängig gemacht</span>')
+        st.setTextFormat(Qt.RichText)
+        row.addWidget(st)
+    elif undo and on_undo:
+        b = QPushButton("↶ Rückgängig")
+        b.setObjectName("CopyBtn")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip("Stellt den Stand vor dieser Änderung wieder her (/undo)")
+        b.clicked.connect(on_undo)
+        row.addWidget(b)
+    lay.addLayout(row)
     lay.addWidget(diff_view(diff))
     return card
 
@@ -476,6 +489,15 @@ def summary_divider(summary, c):
     return lb
 
 
+def summary_note(text):
+    lb = QLabel(text)
+    lb.setObjectName("Muted")
+    lb.setAlignment(Qt.AlignCenter)
+    lb.setWordWrap(True)
+    lb.setStyleSheet("font-size: 8.5pt; padding: 2px;")
+    return lb
+
+
 def role_label(text):
     lb = QLabel(text)
     lb.setObjectName("RoleLabel")
@@ -530,6 +552,7 @@ class ChatView(QScrollArea):
         self.term_widgets = {}  # ("t", tool_id) / ("u", index) -> TermCard
         self.on_confirm = None  # fn("yes"|"always"|"no")
         self.on_speak = None    # fn(text) – 🔊 unter der letzten Antwort
+        self.on_undo = None     # fn(tool_call_id) – ↶ an einer Diff-Karte
         self._stick = True
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
@@ -551,6 +574,7 @@ class ChatView(QScrollArea):
         theme = c.get("name", "")
         results = {m.get("tool_call_id"): m.get("content") or "" for m in messages if m["role"] == "tool"}
         diffs = {m.get("tool_call_id"): m["_diff"] for m in messages if m["role"] == "tool" and m.get("_diff")}
+        tmsgs = {m.get("tool_call_id"): m for m in messages if m["role"] == "tool"}
         specs, prev = [], None
         if not messages and live is None:
             return [(("welcome", theme), lambda: welcome(c))]
@@ -567,9 +591,12 @@ class ChatView(QScrollArea):
                                                                  sh.get("exit"))))
                 prev = r
                 continue
+            if r == "user" and m.get("_note"):
+                specs.append((("note", i, theme), lambda t=m.get("_note"): summary_note(t)))
+                continue
             if r == "user":
                 atts = m.get("_attachments") or []
-                t = m.get("_text", m.get("content") or "") if atts else (m.get("content") or "")
+                t = m["_text"] if "_text" in m else (m.get("content") or "")
                 if m.get("_auto"):
                     t = "📸 Screenshot für das Modell"
                 avail = max(240, self.viewport().width() - 60)
@@ -606,8 +633,11 @@ class ChatView(QScrollArea):
                             path = json.loads(tc["function"]["arguments"] or "{}").get("path", "")
                         except Exception:
                             path = ""
-                        specs.append((("diff", tc["id"], theme),
-                                      lambda tc=tc, path=path, res=res: diff_card(path, diffs[tc["id"]], res, c)))
+                        tm = tmsgs.get(tc["id"], {})
+                        specs.append((("diff", tc["id"], bool(tm.get("_undone")), theme),
+                                      lambda tc=tc, path=path, res=res, tm=tm: diff_card(
+                                          path, diffs[tc["id"]], res, c, tm.get("_undo"), bool(tm.get("_undone")),
+                                          (lambda: self.on_undo(tc["id"])) if self.on_undo else None)))
                         continue
                     waiting = res is None and bool(pending)
                     specs.append((("t", tc["id"], res is None, waiting, theme),

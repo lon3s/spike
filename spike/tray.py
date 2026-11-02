@@ -3,6 +3,7 @@
 spike            → großes Fenster (bzw. holt das laufende spike nach vorn)
 spike --tray     → nur Tray-Symbol starten (für Autostart)
 spike --popup    → Popup ein/aus (zum Binden an eine Tastenkombination)
+spike --text     → markierten Text im Popup bearbeiten (Übersetzen, Korrigieren …; Tastenkürzel)
 spike --quit     → laufendes spike beenden
 """
 import ctypes
@@ -64,6 +65,7 @@ class Controller:
         menu.addAction("Chat-Popup", self.toggle_popup)
         menu.addAction("Großes Fenster", lambda: self.show_main())
         menu.addAction("Neuer Chat", self.new_chat_popup)
+        menu.addAction("Markierten Text bearbeiten", self.text_action)
         menu.addSeparator()
         menu.addAction("Beenden", self.quit)
         self.menu = menu
@@ -143,14 +145,34 @@ class Controller:
         self.app.quit()
 
     def command(self, cmd):
-        {"popup": self.toggle_popup, "main": self.show_main, "quit": self.quit,
+        {"popup": self.toggle_popup, "main": self.show_main, "quit": self.quit, "text": self.text_action,
          "tray": lambda: None}.get(cmd, self.show_main)()
+
+    def text_action(self):
+        """Markierten Text (sonst Zwischenablage) holen und im Popup die Schnellaktionen zeigen."""
+        import subprocess
+        text = ""
+        for args in (["wl-paste", "--primary", "--no-newline"], ["wl-paste", "--no-newline"]):
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=3)
+                if r.returncode == 0 and r.stdout.strip():
+                    text = r.stdout
+                    break
+            except Exception:
+                pass
+        if not text:
+            text = QApplication.clipboard().text(QApplication.clipboard().Mode.Selection) or \
+                QApplication.clipboard().text()
+        self._ensure_popup()
+        if not self.popup.isVisible():
+            self.toggle_popup()
+        self.popup.show_selection(text)
 
 
 def main():
     args = sys.argv[1:]
     cmd = "main"
-    for a, c in (("--tray", "tray"), ("--popup", "popup"), ("--quit", "quit")):
+    for a, c in (("--tray", "tray"), ("--popup", "popup"), ("--quit", "quit"), ("--text", "text")):
         if a in args:
             cmd = c
 

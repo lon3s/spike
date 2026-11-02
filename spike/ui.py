@@ -1,5 +1,6 @@
 """Qt-Oberfläche."""
 import copy
+import html
 import os
 from pathlib import Path
 import re
@@ -992,6 +993,9 @@ class MainWindow(QMainWindow):
         self.bridge.screenshot_done.connect(self._screenshot_done)
         self.bridge.open_chat.connect(self._open_chat_from_notification)
         self.bridge.task_done.connect(self._task_done)
+        self.sel_text = ""
+        self._quick_profile = None
+        self._quick_copy = False
         self.bridge.stt_done.connect(self._stt_done)
         self.bridge.speech_state.connect(lambda t: self._info(t))
         self.recorder = speech.Recorder()
@@ -1066,6 +1070,7 @@ class MainWindow(QMainWindow):
         self.view = ChatView()
         self.view.on_confirm = self._confirm_choice
         self.view.on_speak = self.speak
+        self.view.on_undo = self.undo_change
         self.input = InputBox()
         self.input.setPlaceholderText("Nachricht schreiben …")
         self.input.setToolTip("Enter = senden · Shift+Enter = neue Zeile · Esc = Stopp\n"
@@ -1150,13 +1155,14 @@ class MainWindow(QMainWindow):
         crow = QVBoxLayout()
         crow.setContentsMargins(22, 6, 22, 8)
         crow.setSpacing(5)
+        self.sel_bar = self._build_sel_bar()
         self.att_bar = QWidget()
         self.att_bar.setMaximumWidth(ChatView.MAX_W)
         self.att_row = QHBoxLayout(self.att_bar)
         self.att_row.setContentsMargins(8, 0, 8, 0)
         self.att_row.setSpacing(6)
         self.att_bar.hide()
-        for w_ in (self.cmd_list, self.att_bar, composer, self.meta):
+        for w_ in (self.cmd_list, self.sel_bar, self.att_bar, composer, self.meta):
             h = QHBoxLayout()
             h.addStretch(1)
             h.addWidget(w_, 100)
@@ -1496,6 +1502,139 @@ class MainWindow(QMainWindow):
             self.new_chat()
 
     # --- Senden ---
+    # --- Markierten Text bearbeiten (spike --text) ---
+    QUICK = [
+        ("uebersetzen", "🌐 Übersetzen", True,
+         "Übersetze den folgenden Text. Ist er deutsch, übersetze ins Englische, sonst ins Deutsche. "
+         "Behalte Ton und Formatierung bei. Gib nur die Übersetzung aus."),
+        ("korrigieren", "✏ Korrigieren", True,
+         "Korrigiere Rechtschreibung, Grammatik und Zeichensetzung im folgenden Text. Behalte Sprache, Stil, "
+         "Wortwahl und Formatierung bei. Gib nur den korrigierten Text aus."),
+        ("erklaeren", "💡 Erklären", False,
+         "Erkläre mir knapp und verständlich auf Deutsch, was der folgende Text bedeutet bzw. was er macht "
+         "(bei Code oder Fehlermeldungen: was ist die Ursache und was kann ich tun?)."),
+        ("zusammenfassen", "📝 Zusammenfassen", False,
+         "Fasse den folgenden Text auf Deutsch in wenigen Stichpunkten zusammen."),
+        ("antworten", "↩ Antwort formulieren", True,
+         "Formuliere eine passende, freundliche Antwort auf die folgende Nachricht, in derselben Sprache. "
+         "Gib nur die Antwort aus."),
+    ]
+
+    def _build_sel_bar(self):
+        bar = QFrame()
+        bar.setObjectName("Chip")
+        bar.setMaximumWidth(ChatView.MAX_W)
+        lay = QVBoxLayout(bar)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(6)
+        head = QHBoxLayout()
+        self.sel_label = QLabel()
+        self.sel_label.setWordWrap(True)
+        self.sel_label.setObjectName("Muted")
+        head.addWidget(self.sel_label, 1)
+        close = _icon_btn("✕", "Auswahl verwerfen", self.clear_selection)
+        close.setFixedSize(28, 28)
+        head.addWidget(close, 0, Qt.AlignTop)
+        lay.addLayout(head)
+        flow = QWidget()
+        grid = QHBoxLayout(flow)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
+        for key, label, _copy, _prompt in self.QUICK:
+            b = QPushButton(label)
+            b.setObjectName("CopyBtn")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.quick_action(k))
+            grid.addWidget(b)
+        grid.addStretch(1)
+        lay.addWidget(flow)
+        bar.hide()
+        return bar
+
+    def show_selection(self, text):
+        text = (text or "").strip()
+        if not text:
+            self._info("Kein Text markiert (oder in der Zwischenablage)")
+            return
+        if self.agent:
+            self._info("Bitte warten, bis die Antwort fertig ist")
+            return
+        if self.chat and self.chat["messages"]:
+            self.new_chat()
+        self.sel_text = text[:20000]
+        prev = " ".join(text.split())
+        self.sel_label.setText(f"✂ <b>Markierter Text</b> ({len(text)} Zeichen): „{html.escape(prev[:160])}"
+                               f"{'…' if len(prev) > 160 else ''}“")
+        self.sel_label.setTextFormat(Qt.RichText)
+        self.sel_bar.show()
+        self.input.setPlaceholderText("…oder schreib, was ich mit dem Text machen soll")
+        self.input.setFocus()
+
+    def clear_selection(self):
+        self.sel_text = ""
+        self.sel_bar.hide()
+        self.input.setPlaceholderText("Nachricht schreiben …")
+
+    def quick_action(self, key, instruction=""):
+        if not self.sel_text or self.agent or not self.endpoint():
+            return
+        q = next((x for x in self.QUICK if x[0] == key), None)
+        prompt = instruction if key == "frei" else q[3]
+        label = f"✂ {instruction}" if key == "frei" else q[1]
+        text = self.sel_text
+        prev = " ".join(text.split())
+        msg = {"role": "user", "content": f'{prompt}\n\n"""\n{text}\n"""',
+               "_text": f"{label}\n> {prev[:300]}{'…' if len(prev) > 300 else ''}"}
+        if self.chat["title"] == "Neuer Chat":
+            self.chat["title"] = f"{label}: {prev}"[:45]
+            it = self.chat_list.currentItem()
+            if it:
+                it.setText(self.chat["title"])
+        self.chat["messages"].append(msg)
+        base = self.profile()
+        self._quick_profile = {**base, "tools": [], "thinking": "aus", "system_prompt": (
+            "Du bist ein Textassistent. Antworte nur mit dem gewünschten Ergebnis, ohne Einleitung, Anführungszeichen "
+            "oder Nachbemerkung – außer es wird ausdrücklich eine Erklärung verlangt. Heute ist {date}.")}
+        self._quick_copy = bool(q and q[2])
+        self.clear_selection()
+        self._start_agent()
+        self._quick_profile = None
+
+    # --- Rückgängig ---
+    def undo_change(self, tool_call_id=None):
+        """Macht eine Dateiänderung rückgängig (ohne id: die letzte noch nicht rückgängig gemachte im Chat)."""
+        if self.agent or not self.chat:
+            self._info("Bitte warten, bis die Antwort fertig ist")
+            return
+        msgs = self.chat["messages"]
+        cand = [m for m in msgs if m["role"] == "tool" and m.get("_undo") and not m.get("_undone")]
+        if tool_call_id:
+            cand = [m for m in cand if m.get("tool_call_id") == tool_call_id]
+        if not cand:
+            self._info("Nichts mehr rückgängig zu machen")
+            return
+        m = cand[-1]
+        info = m["_undo"]
+        try:
+            res = T.undo_change(info)
+        except ValueError as e:
+            if QMessageBox.question(self, "Rückgängig", f"{e}.\n\nTrotzdem auf den alten Stand zurücksetzen? "
+                                                       f"Spätere Änderungen an der Datei gehen dann verloren.") \
+                    != QMessageBox.Yes:
+                return
+            res = T.undo_change(info, force=True)
+        except Exception as e:
+            self._info(f"⚠ Rückgängig fehlgeschlagen: {e}")
+            return
+        m["_undone"] = True
+        # Das Modell soll wissen, dass die Datei wieder alt ist
+        msgs.append({"role": "user", "content": f"[Hinweis: Ich habe die Änderung an {info['path']} rückgängig "
+                                                f"gemacht – die Datei ist wieder im alten Stand.]",
+                     "_note": f"↶ {res}"})
+        C.save_chat(self.chat)
+        self.redraw()
+        self._info(f"↶ {res}")
+
     # --- Sprache ---
     def toggle_record(self):
         if self.recorder.active:
@@ -1719,7 +1858,8 @@ class MainWindow(QMainWindow):
     def _new_agent(self):
         ep = self.endpoint()
         n_ctx = self.n_ctx.get(ep["name"]) or self.cfg["settings"]["default_n_ctx"]
-        a = Agent(self.chat, ep, self.model_id(), self.profile(), self.cfg["settings"], self.toolbox, n_ctx)
+        prof = self._quick_profile or self.profile()
+        a = Agent(self.chat, ep, self.model_id(), prof, self.cfg["settings"], self.toolbox, n_ctx)
         a.usage.connect(self._usage)
         a.vision = self.toolbox.vision = bool(self.vision.get(ep["name"]))
         return a
@@ -1745,6 +1885,10 @@ class MainWindow(QMainWindow):
         if text.startswith("!") and len(text) > 1:
             self.run_user_shell(text[1:].strip())
             return
+        if self.sel_text and text and not self.agent:
+            self.input.clear()
+            self.quick_action("frei", text)
+            return
         if self._shell_running:
             self._info("Warte, bis der Terminal-Befehl fertig ist (Stopp bricht ab)")
             return
@@ -1762,6 +1906,9 @@ class MainWindow(QMainWindow):
             it = self.chat_list.currentItem()
             if it:
                 it.setText(self.chat["title"])
+        self._start_agent()
+
+    def _start_agent(self):
         self.agent = self._new_agent()
         self.agent.speed.connect(self._speed)
         self.agent.changed.connect(self.redraw)
@@ -1855,6 +2002,12 @@ class MainWindow(QMainWindow):
         self.status.setText(text)
 
     def _finished(self):
+        if self._quick_copy and self.chat and self.chat["messages"]:
+            self._quick_copy = False
+            last = self.chat["messages"][-1]
+            if last["role"] == "assistant" and last.get("content"):
+                QApplication.clipboard().setText(last["content"].strip())
+                QTimer.singleShot(50, lambda: self._info("📋 Ergebnis liegt in der Zwischenablage (Strg+V)"))
         if self.cfg["settings"].get("tts_auto") and self.chat and self.chat["messages"]:
             last = self.chat["messages"][-1]
             if last["role"] == "assistant" and last.get("content"):
@@ -1921,6 +2074,7 @@ class MainWindow(QMainWindow):
         ("/aufgaben", ("/tasks", "/erinnerungen"), "", "Geplante Erinnerungen und Aufgaben anzeigen"),
         ("/vorlesen", ("/speak", "/sag"), "[Text]", "Letzte Antwort (oder Text) vorlesen"),
         ("/stimme", ("/voice",), "<Name>", "Piper-Stimme wechseln"),
+        ("/undo", ("/rückgängig",), "", "Letzte Dateiänderung rückgängig machen"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
@@ -2066,6 +2220,8 @@ class MainWindow(QMainWindow):
             self._sync_chat_settings()
             self._estimate()
             self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/undo":
+            self.undo_change()
         elif name == "/stimme":
             voices = speech.piper_voices()
             hit = next((p for n, p in voices if n.lower() == arg.lower()), None) or \
