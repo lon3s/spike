@@ -53,6 +53,7 @@ class Agent(QObject):
         self.live_tool = None     # laufendes Werkzeug: {"id", "out"} – Live-Ausgabe im Terminal-Block
         self._cur = ("", {})
         self.vision = False       # versteht der Server Bilder? (setzt die Oberfläche)
+        self.auto_deny = False    # geplante Aufgaben: niemand da zum Bestätigen → automatisch ablehnen
         self._remember = False
         self._reason = ""
 
@@ -122,6 +123,10 @@ class Agent(QObject):
         key = self._allow_key()
         if key and key in self.chat.get("allow", []):
             return True
+        if self.auto_deny:
+            self._reason = ("Geplante Aufgabe – der Nutzer ist nicht da und kann nichts freigeben. Erledige es "
+                            "ohne diese Aktion oder beschreibe, was er selbst tun soll.")
+            return False
         short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
                  {"pc:open": "Öffnen", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
                   "python_run": "Python"}.get(key, key[:18]))

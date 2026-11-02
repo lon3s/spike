@@ -19,7 +19,7 @@ from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .theme import THEMES, palette, qss
-from . import attachments as A, memory, plugins
+from . import attachments as A, memory, plugins, scheduler as S
 from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
 
@@ -66,6 +66,8 @@ class InputBox(QPlainTextEdit):
 class Bridge(QObject):
     models_loaded = Signal(str, list, int, str)   # endpoint, models, n_ctx, error
     screenshot_done = Signal(object, str)          # anhang (oder None), fehler
+    open_chat = Signal(str)                        # Klick auf „Öffnen“ in einer Benachrichtigung
+    task_done = Signal(str, str, str)              # chat_id, titel, antwort (geplante Aufgabe fertig)
     shell_update = Signal()                       # !-Befehl: neue Ausgabe
     shell_done = Signal()
 
@@ -690,6 +692,7 @@ def _icon_btn(text, tip, slot):
 
 
 _INDEX_TIMER = None
+_SCHED_TIMER = None
 
 
 class MainWindow(QMainWindow):
@@ -713,6 +716,8 @@ class MainWindow(QMainWindow):
         self.bridge.shell_update.connect(self.redraw)
         self.bridge.shell_done.connect(self._shell_done)
         self.bridge.screenshot_done.connect(self._screenshot_done)
+        self.bridge.open_chat.connect(self._open_chat_from_notification)
+        self.bridge.task_done.connect(self._task_done)
         self.vision = {}             # endpoint-name -> versteht Bilder?
         self.attachments = []        # Anhänge für die nächste Nachricht
         self.setAcceptDrops(True)
@@ -921,6 +926,15 @@ class MainWindow(QMainWindow):
             _INDEX_TIMER.timeout.connect(check)
             _INDEX_TIMER.start()
             QTimer.singleShot(20_000, check)     # nicht direkt beim Anmelden
+        # Erinnerungen/Aufgaben: alle 15 s prüfen (nur ein Timer; ausgeführt vom ersten Fenster)
+        global _SCHED_TIMER
+        if _SCHED_TIMER is None:
+            _SCHED_TIMER = QTimer(QApplication.instance())
+            _SCHED_TIMER.setInterval(15_000)
+            _SCHED_TIMER.timeout.connect(self._run_due_tasks)
+            _SCHED_TIMER.start()
+            QTimer.singleShot(5_000, self._run_due_tasks)
+            self._sched_running = []
         self.apply_theme()
         self._fill_combos()
         self._load_chat_list()
@@ -1145,6 +1159,65 @@ class MainWindow(QMainWindow):
             self.new_chat()
 
     # --- Senden ---
+    # --- Erinnerungen / geplante Aufgaben ---
+    def _run_due_tasks(self):
+        for t in S.due(time.time()):
+            late = " (verpasst – spike lief nicht)" if t.get("late") else ""
+            if t["kind"] == "erinnerung":
+                S.notify(f"⏰ Erinnerung{late}", t["text"], urgent=True)
+            else:
+                self._run_task(t, late)
+
+    def _run_task(self, t, late=""):
+        ep = self.endpoint()
+        if not ep:
+            S.notify("🤖 Geplante Aufgabe", f"Kein Server eingerichtet: {t['text']}")
+            return
+        prof = next((p for p in self.cfg["profiles"] if p["name"] == (t.get("profile") or "Alles")), self.profile())
+        chat = C.new_chat(ep["name"], self.model_id(), prof["name"])
+        chat["title"] = f"🤖 {t['text']}"[:45]
+        chat["messages"].append({"role": "user", "content": f"(Geplante Aufgabe{late}, {time.strftime('%d.%m.%Y %H:%M')}) "
+                                                            f"{t['text']}"})
+        n_ctx = self.n_ctx.get(ep["name"]) or self.cfg["settings"]["default_n_ctx"]
+        a = Agent(chat, ep, self.model_id(), prof, self.cfg["settings"], ToolBox(self.cfg["settings"], self.browser),
+                  n_ctx)
+        a.auto_deny = True
+        self._sched_running.append(a)
+
+        def done(a=a, chat=chat):      # läuft im Hintergrund-Thread → nur speichern und Signal schicken
+            C.save_chat(chat)
+            if a in self._sched_running:
+                self._sched_running.remove(a)
+            last = next((m.get("content") for m in reversed(chat["messages"])
+                         if m["role"] == "assistant" and m.get("content")), "(keine Antwort)")
+            self.bridge.task_done.emit(chat["id"], f"🤖 {t['text'][:60]}{late}", last)
+        a.finished.connect(done, Qt.DirectConnection)
+        a.start()
+
+    def _task_done(self, chat_id, title, text):
+        self._load_chat_list_keep()
+        S.notify(title, text, on_open=lambda: self.bridge.open_chat.emit(chat_id))
+
+    def _load_chat_list_keep(self):
+        """Chatliste auffrischen, ohne den offenen Chat zu wechseln."""
+        if self.agent:
+            return
+        cur = self.chat["id"] if self.chat else None
+        self.chat_list.blockSignals(True)
+        self._load_chat_list()
+        for i in range(self.chat_list.count()):
+            if self.chat_list.item(i).data(Qt.UserRole) == cur:
+                self.chat_list.setCurrentRow(i)
+        self.chat_list.blockSignals(False)
+
+    def _open_chat_from_notification(self, chat_id):
+        if self.ctrl:
+            self.ctrl.show_main(chat_id)
+        else:
+            self.select_chat(chat_id)
+            self.show()
+            self.raise_()
+
     # --- Anhänge ---
     def _user_message(self, text):
         if not self.attachments:
@@ -1444,6 +1517,7 @@ class MainWindow(QMainWindow):
         ("/modell", ("/model",), "<Name>", "Modell wechseln"),
         ("/server", ("/endpoint",), "<Name>", "Server wechseln"),
         ("/screenshot", ("/bildschirm",), "[Frage]", "Bildschirmfoto anhängen (mit Frage: gleich senden)"),
+        ("/aufgaben", ("/tasks", "/erinnerungen"), "", "Geplante Erinnerungen und Aufgaben anzeigen"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
@@ -1587,6 +1661,13 @@ class MainWindow(QMainWindow):
             self._sync_chat_settings()
             self._estimate()
             self._info(f"{ {'/profil': 'Profil', '/server': 'Server', '/modell': 'Modell'}[name] }: {hit}")
+        elif name == "/aufgaben":
+            tasks = sorted(S.load(), key=lambda t: t["next"])
+            if not tasks:
+                self._info("Nichts geplant. Sag z. B. „erinnere mich in 20 min an den Tee“.")
+            else:
+                QMessageBox.information(self, "Geplant", "\n".join(S.describe(t) for t in tasks) +
+                                        "\n\nLöschen: „lösche Aufgabe <id>“ schreiben.")
         elif name == "/screenshot":
             self.take_screenshot(arg)
         elif name == "/denken":

@@ -74,6 +74,17 @@ TOOL_SPECS = {
     "screenshot": _fn("screenshot", "Macht ein Bildschirmfoto (ganzer Bildschirm oder aktives Fenster) und zeigt es "
                       "dir als Bild. Nur nutzen, wenn du sehen musst, was auf dem Bildschirm ist.",
                       {"window": {"type": "boolean", "description": "nur das aktive Fenster"}}),
+    "schedule_add": _fn("schedule_add", "Plant eine Erinnerung (Benachrichtigung zur Zeit) oder eine Aufgabe (spike "
+                        "fragt dich zur Zeit selbst mit text und meldet das Ergebnis; ohne Freigaben, also nur lesen/"
+                        "suchen/rechnen). when: 'in 20 min', '15:30', 'morgen 8:00', 'freitag 18:00', '2026-11-03 09:00'. "
+                        "repeat (optional): täglich, werktags, wöchentlich, stündlich, 'alle 30 min'.",
+                        {"when": {"type": "string"}, "text": {"type": "string", "description": "Erinnerungstext bzw. "
+                                                              "Auftrag an dich selbst"},
+                         "kind": {"type": "string", "enum": ["erinnerung", "aufgabe"]},
+                         "repeat": {"type": "string"}}, ["when", "text"]),
+    "schedule_list": _fn("schedule_list", "Zeigt geplante Erinnerungen und Aufgaben."),
+    "schedule_delete": _fn("schedule_delete", "Löscht eine geplante Erinnerung/Aufgabe per id.",
+                           {"id": {"type": "string"}}, ["id"]),
     "python_run": _fn("python_run", "Führt Python-3-Code aus (Nutzer bestätigt) und gibt stdout/stderr zurück. "
                       "Für Rechnen, Daten auswerten, Dateien umwandeln. Ergebnisse mit print() ausgeben.",
                       {"code": {"type": "string"}}, ["code"]),
@@ -99,7 +110,9 @@ TOOL_LABELS = {
     "browser_read": "Browser: lesen", "browser_click": "Browser: klicken", "browser_type": "Browser: tippen",
     "browser_back": "Browser: zurück", "run_shell": "Shell-Befehl ⚠", "read_file": "Datei lesen",
     "list_dir": "Ordner auflisten", "find_files": "Dateien suchen", "edit_file": "Datei ändern (Diff) ⚠",
-    "grep": "In Dateien suchen (grep)", "screenshot": "Screenshot ansehen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
+    "grep": "In Dateien suchen (grep)", "screenshot": "Screenshot ansehen",
+    "schedule_add": "Erinnerung/Aufgabe planen", "schedule_list": "Geplantes anzeigen",
+    "schedule_delete": "Geplantes löschen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
 }
@@ -803,6 +816,22 @@ class ToolBox:
         name = svc.replace("org.mpris.MediaPlayer2.", "")
         song = " – ".join(x.group(1).strip() for x in (artist, title) if x)
         return f"{name}: {status}" + (f" · {song}" if song else "")
+
+    # --- Erinnerungen / geplante Aufgaben ---
+    def t_schedule_add(self, when, text, kind="erinnerung", repeat="", confirm=None):
+        from . import scheduler
+        t = scheduler.add(when, text, kind, repeat)
+        what = "Erinnerung" if t["kind"] == "erinnerung" else "Aufgabe"
+        return f"{what} geplant: {scheduler.describe(t)}"
+
+    def t_schedule_list(self, confirm=None):
+        from . import scheduler
+        tasks = sorted(scheduler.load(), key=lambda t: t["next"])
+        return "\n".join(scheduler.describe(t) for t in tasks) or "Nichts geplant."
+
+    def t_schedule_delete(self, id, confirm=None):
+        from . import scheduler
+        return "Gelöscht." if scheduler.delete(id) else f"Keine Aufgabe mit id {id}."
 
     # --- Gedächtnis ---
     def t_memory_save(self, fact, confirm=None):

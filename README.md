@@ -36,6 +36,11 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   `--mmproj`, erkannt über `/props`). Nur die letzten 3 Bilder eines Chats werden mitgeschickt.
 - **Screenshots**: `/screenshot [Frage]` blendet das Popup aus, fotografiert den Bildschirm (Spectacle) und hängt das
   Bild an; das Modell kann mit dem Werkzeug `screenshot` auch selbst nachsehen.
+- **Erinnerungen und geplante Aufgaben**: „Erinnere mich in 20 min an den Tee“ → KDE-Benachrichtigung. „Sag mir jeden
+  Morgen um 8, wie voll meine Platten sind“ → spike führt den Auftrag zur Zeit selbst aus (ohne Freigaben: alles, was
+  bestätigt werden müsste, wird automatisch abgelehnt) und meldet das Ergebnis; „Öffnen“ zeigt den Chat.
+  Wiederholung: täglich, werktags, wöchentlich, stündlich, alle N min. Läuft, solange spike läuft (Tray);
+  Verpasstes wird beim nächsten Start nachgeholt. `/aufgaben` zeigt alles Geplante.
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
@@ -130,6 +135,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/kontext` | Kontext-Belegung anzeigen |
 | `/profil <Name>`, `/modell <Name>`, `/server <Name>` | wechseln (auch im Popup, wo die Kopfzeile fehlt) |
 | `/screenshot [Frage]` | Bildschirmfoto anhängen |
+| `/aufgaben` | geplante Erinnerungen/Aufgaben |
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/stop` | Antwort abbrechen |
