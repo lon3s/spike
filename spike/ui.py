@@ -1132,8 +1132,10 @@ class MainWindow(QMainWindow):
 
     # --- Kombos ---
     def _fill_combos(self):
-        for cb, items in ((self.cb_ep, self.cfg["endpoints"]), (self.cb_profile, self.cfg["profiles"])):
-            cur = cb.currentText()
+        st = self.cfg["settings"]
+        for cb, items, last in ((self.cb_ep, self.cfg["endpoints"], st.get("last_endpoint")),
+                                (self.cb_profile, self.cfg["profiles"], st.get("last_profile"))):
+            cur = cb.currentText() or last or ""
             cb.blockSignals(True)
             cb.clear()
             cb.addItems([i["name"] for i in items])
@@ -1175,7 +1177,9 @@ class MainWindow(QMainWindow):
             return
         if n_ctx:
             self.n_ctx[name] = n_ctx
-        want = (self.chat or {}).get("model") or (self.endpoint() or {}).get("model") or ""
+        st = self.cfg["settings"]
+        want = (st.get("last_model") if st.get("last_endpoint") == name else "") or \
+            (self.endpoint() or {}).get("model") or ""
         self.cb_model.blockSignals(True)
         self.cb_model.clear()
         for mid in models:   # lange Pfade kurz anzeigen, volle ID als Daten
@@ -1206,6 +1210,48 @@ class MainWindow(QMainWindow):
             self.chat["endpoint"] = self.cb_ep.currentText()
             self.chat["model"] = self.model_id()
             self.chat["profile"] = self.cb_profile.currentText()
+        self._remember_selection()
+
+    # Server/Modell/Profil gelten für beide Fenster (großes Fenster und Popup) und bleiben gespeichert
+    def _remember_selection(self):
+        if getattr(self, "_applying", False):
+            return
+        ep, model, prof = self.cb_ep.currentText(), self.model_id(), self.cb_profile.currentText()
+        st = self.cfg["settings"]
+        if not model and st.get("last_endpoint") == ep:
+            model = st.get("last_model", "")          # Modelle noch nicht geladen → altes Modell behalten
+        new = {"last_endpoint": ep, "last_model": model, "last_profile": prof}
+        if all(st.get(k) == v for k, v in new.items()):
+            return
+        st.update(new)
+        C.save_config(self.cfg)
+        if self.ctrl:
+            for w in (self.ctrl.main, self.ctrl.popup):
+                if w is not None and w is not self:
+                    w.apply_selection(ep, model, prof)
+
+    def apply_selection(self, ep, model, prof):
+        """Auswahl aus dem anderen Fenster übernehmen."""
+        self._applying = True
+        try:
+            self.cfg["settings"].update(last_endpoint=ep, last_model=model, last_profile=prof)
+            for cb, val in ((self.cb_profile, prof), (self.cb_ep, ep)):
+                if val and cb.findText(val) >= 0:
+                    cb.blockSignals(True)
+                    cb.setCurrentText(val)
+                    cb.blockSignals(False)
+            idx = self.cb_model.findData(model)
+            if idx >= 0 and self.n_ctx.get(ep) is not None:
+                self.cb_model.blockSignals(True)
+                self.cb_model.setCurrentIndex(idx)
+                self.cb_model.blockSignals(False)
+                self._sync_chat_settings()
+            else:
+                self.refresh_models()               # anderer Server → Modelle holen, last_model wird gewählt
+            self._update_meta()
+            self._estimate()
+        finally:
+            self._applying = False
 
     # --- Chats ---
     def select_chat(self, chat_id):
@@ -1263,11 +1309,7 @@ class MainWindow(QMainWindow):
             return   # neuer, noch ungespeicherter Chat
         if prev and prev.text() == "Neuer Chat" and self.chat_list.row(prev) >= 0:
             self.chat_list.takeItem(self.chat_list.row(prev))   # leere Chats aufräumen
-        for cb, key in ((self.cb_ep, "endpoint"), (self.cb_profile, "profile")):
-            if self.chat.get(key) and cb.findText(self.chat[key]) >= 0:
-                cb.blockSignals(True)
-                cb.setCurrentText(self.chat[key])
-                cb.blockSignals(False)
+        # Server/Modell/Profil bleiben wie gewählt (gelten für alle Chats und beide Fenster)
         self.ctx_bar.setValue(0)
         self.refresh_models()
         self.redraw()
