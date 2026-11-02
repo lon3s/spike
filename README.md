@@ -73,6 +73,7 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 - **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat und Beenden.
 - **Mittelklick**: großes Fenster.
 - Im Popup öffnet ⤢ denselben Chat im großen Fenster, Esc schließt das Popup.
+- 📌 im Popup heftet es an: Es bleibt offen, auch wenn du woanders klickst. Ein zweiter Klick löst es wieder.
 - Das große Fenster schließen beendet spike nicht, es läuft im Tray weiter. Beenden geht über das Tray-Menü.
 - Es läuft immer nur ein spike. `spike` holt das Fenster nach vorn, `spike --popup` schaltet das Popup um,
   `spike --tray` startet nur im Tray, `spike --quit` beendet.

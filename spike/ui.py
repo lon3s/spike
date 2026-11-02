@@ -309,7 +309,7 @@ class PopupShell(QWidget):
         frame = QFrame()
         frame.setObjectName("PopupFrame")
         fl = QVBoxLayout(frame)
-        fl.setContentsMargins(1, 1, 1, 1)
+        fl.setContentsMargins(1, 8, 1, 1)   # Abstand oben, damit nichts über die runden Ecken malt
         fl.addWidget(content)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(self.PAD, self.PAD - 4, self.PAD, self.PAD + 4)
@@ -343,6 +343,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.popup, self.ctrl = popup, ctrl
         self._hidden_at = 0.0
+        self._was_active = False
         self.setWindowTitle("spike")
         self.resize(1200, 820)
         self.cfg = C.load_config()
@@ -440,6 +441,11 @@ class MainWindow(QMainWindow):
         cl = QHBoxLayout(composer)
         cl.setContentsMargins(10, 6, 6, 6)
         cl.addWidget(self.btn_compact, 0, Qt.AlignBottom)
+        self.btn_pin = _icon_btn("📌", "Anheften: Popup bleibt offen, auch wenn du woanders klickst", self.toggle_pin)
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.setChecked(bool(self.cfg["settings"].get("popup_pinned")))
+        self.btn_pin.setVisible(popup)
+        cl.addWidget(self.btn_pin, 0, Qt.AlignBottom)
         cl.addWidget(self.input, 1)
         cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
         cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
@@ -783,14 +789,31 @@ class MainWindow(QMainWindow):
 
     def changeEvent(self, e):
         # Popup schließt sich, sobald man daneben klickt (wie das Lautstärke-Popup)
-        if self.popup and e.type() == QEvent.ActivationChange and not self.isActiveWindow():
-            QTimer.singleShot(120, self._maybe_autohide)
+        if self.popup and e.type() == QEvent.ActivationChange:
+            if self.isActiveWindow():
+                self._was_active = True
+            elif self._was_active:      # nur schließen, wenn es vorher wirklich aktiv war
+                QTimer.singleShot(120, self._maybe_autohide)
         super().changeEvent(e)
 
+    def toggle_pin(self):
+        pinned = self.btn_pin.isChecked()
+        self.cfg["settings"]["popup_pinned"] = pinned
+        C.save_config(self.cfg)
+        self.btn_pin.setToolTip("Angeheftet – Klick löst das Popup wieder (schließt dann beim Klick daneben)"
+                                if pinned else "Anheften: Popup bleibt offen, auch wenn du woanders klickst")
+        self.input.setFocus()
+
     def _maybe_autohide(self):
+        if self.btn_pin.isChecked():
+            return
         if self.isVisible() and not self.isActiveWindow() and QApplication.activeModalWidget() is None \
                 and QApplication.activeWindow() is None:
             self.hide()
+
+    def showEvent(self, e):
+        self._was_active = False
+        super().showEvent(e)
 
     def hideEvent(self, e):
         self._hidden_at = time.monotonic()

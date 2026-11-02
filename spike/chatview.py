@@ -202,6 +202,8 @@ class ChatView(QScrollArea):
         outer.addWidget(self.column, 100)
         outer.addStretch(1)
         self.setWidget(inner)
+        self.viewport().setAutoFillBackground(False)
+        inner.setAutoFillBackground(False)
         self.blocks = []        # [(key, widget)]
         self._stick = True
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)

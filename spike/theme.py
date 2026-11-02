@@ -56,7 +56,9 @@ def qss(c) -> str:
     #RoleLabel {{ color: {c['muted']}; font-size: 8.5pt; font-weight: 700; padding-top: 6px; }}
     #WelcomeTitle {{ font-size: 22pt; font-weight: 700; }}
     #PopupFrame {{ background: {c['bg']}; border: 1px solid {c['border']}; border-radius: 18px; }}
-    #PopupFrame #Root, #PopupFrame #TopBar {{ background: transparent; }}
+    #PopupFrame #Root, #PopupFrame #TopBar, #PopupFrame QScrollArea#Chat, #PopupFrame #ChatInner,
+    #PopupFrame #ChatColumn, #PopupFrame QScrollArea#Chat > QWidget {{ background: transparent; }}
+    QPushButton#Icon:checked {{ background: {c['sel']}; color: {c['accent']}; }}
     #Composer:focus-within {{ border-color: {c['accent']}; }}
     QTextBrowser#Chat {{ background: {c['bg']}; border: none; }}
     QPlainTextEdit#Input {{ background: transparent; border: none; padding: 4px; }}
