@@ -16,8 +16,7 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Modelle werden automatisch vom Server geladen.
 - **Designs**: System (hell/dunkel), Dunkel, Hell, Cyberpunk, Matrix (Monospace-Schrift), Solarized dunkel/hell, Nord,
   Dracula, Gruvbox – unter ⚙ → Design. Jedes Design bringt passende Farben für den Popup-Leuchtrahmen mit.
-- **Eingabefeld-Stile** (⚙ → Eingabefeld): Standard, Terminal (Prompt + blinkender Block-Cursor), Neon-Glow
-  (umlaufender Farbverlauf, pulsiert, leuchtet beim Senden auf), Minimal-Linie (wächst beim Fokus, Lichtpunkt folgt dem
+- **Eingabefeld-Stile** (⚙ → Eingabefeld): Standard, Neon-Glow (umlaufender Farbverlauf, pulsiert, leuchtet beim Senden auf), Minimal-Linie (wächst beim Fokus, Lichtpunkt folgt dem
   Cursor) und Glas (Lichtreflex). Animationen laufen nur, solange das Feld den Fokus hat.
 - **Profile**: pro Vorgang eigener System-Prompt, Temperatur und Werkzeug-Auswahl (`{date}` wird ersetzt).
 - **Werkzeuge**: `web_search` (DuckDuckGo), `fetch_url`, Browser (Playwright: öffnen, lesen, klicken, tippen,

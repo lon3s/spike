@@ -40,58 +40,6 @@ class InputBox(QPlainTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.document().contentsChanged.connect(self._fit)
         self._fit()
-        # Terminal-Stil: eigener Block-Cursor █, der blinkt (beim Tippen kurz dauerhaft an)
-        self.block_cursor = False
-        self.cursor_color = ""
-        self._blink_on = True
-        self._blink = QTimer(self)
-        self._blink.setInterval(530)
-        self._blink.timeout.connect(self._toggle_blink)
-        self.cursorPositionChanged.connect(self._cursor_moved)
-
-    def _toggle_blink(self):
-        self._blink_on = not self._blink_on
-        self.viewport().update()
-
-    def _cursor_moved(self):
-        if self.block_cursor:
-            self._blink_on = True
-            self._blink.start()           # Takt neu starten → beim Tippen kein Flackern
-            self.viewport().update()
-
-    def focusInEvent(self, e):
-        super().focusInEvent(e)
-        if self.block_cursor:
-            self._cursor_moved()
-
-    def focusOutEvent(self, e):
-        super().focusOutEvent(e)
-        self._blink.stop()
-        self.viewport().update()
-
-    def paintEvent(self, e):
-        super().paintEvent(e)
-        if not self.block_cursor:
-            return
-        r = self.cursorRect()
-        fm = self.fontMetrics()
-        cur = self.textCursor()
-        ch = self.document().characterAt(cur.position())
-        w = fm.horizontalAdvance(ch if ch and ch.isprintable() and ch not in "\u2029\n" else "M")
-        box = QRectF(r.left(), r.top() + 1, max(7, w), r.height() - 2)
-        p = QPainter(self.viewport())
-        col = QColor(self.cursor_color or "#7ee787")
-        if self.hasFocus() and self._blink_on:
-            col.setAlpha(190)
-            p.fillRect(box, col)
-            if ch and ch.isprintable():   # Zeichen unter dem Cursor bleibt lesbar
-                p.setPen(QColor("#0b0d10"))
-                p.drawText(box, Qt.AlignLeft | Qt.AlignVCenter, ch)
-        elif not self.hasFocus():
-            col.setAlpha(120)
-            p.setPen(QPen(col, 1))
-            p.drawRect(box.adjusted(0.5, 0.5, -0.5, -0.5))
-        p.end()
 
     def _fit(self):
         lines = max(1, int(self.document().size().height()))
@@ -99,6 +47,11 @@ class InputBox(QPlainTextEdit):
         want = lines * line_h + 18
         self.setFixedHeight(min(220, want))
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if want > 220 else Qt.ScrollBarAlwaysOff)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if e.oldSize().width() != e.size().width():   # andere Breite → Umbruch und damit Höhe ändern sich
+            QTimer.singleShot(0, self._fit)
 
     key_hook = None     # fn(key) -> True, wenn die Taste verbraucht wurde (Befehlsliste)
     attach_hook = None  # fn(mime) -> True, wenn Bild/Dateien als Anhang übernommen wurden
@@ -1532,7 +1485,6 @@ class MainWindow(QMainWindow):
         # sonst wird die Leiste höher und der Senden-Knopf sitzt nicht mittig
         for b in (self.btn_compact, self.btn_pin):
             b.setFixedSize(36, 36)
-        cl.addWidget(composer.prompt, 0, Qt.AlignTop)
         cl.addWidget(self.input, 1)
         composer.attach(self.input)
         self.btn_mic = _icon_btn("🎤", "Sprechen (Strg+M): klicken, reden, nochmal klicken", self.toggle_record)

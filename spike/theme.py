@@ -39,7 +39,7 @@ THEMES = {
         "user_code": "#022a0c", "code": "#000400", "chip": "#03170a", "danger": "#ff5050", "sel": "#073814",
         "popup": "#010e03", "user_text": "#d4ffdc",
         "font": "'JetBrains Mono', 'Fira Code', 'Hack', 'DejaVu Sans Mono', monospace",
-        "glow": ["#00ff41", "#008f11", "#b8ffc4"], "input": "terminal",
+        "glow": ["#00ff41", "#008f11", "#b8ffc4"], "input": "neon",
     },
     "solarized": {
         "name": "solarized", "label": "Solarized dunkel", "dark": True,
