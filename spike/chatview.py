@@ -1,11 +1,12 @@
 """Chatverlauf aus echten Widgets: runde Blasen, Code-Karten mit Kopieren-Knopf, Schatten."""
 import html
 import json
+import math
 import re
 import time
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -151,7 +152,7 @@ def user_bubble(text, c, compact, avail=MAX_W, atts=None):
         if seg[0] == "code":
             bl.addWidget(CodeBlock(seg[1], seg[2], c))
         else:
-            lb = _label(md_html(seg[1], c["code"]))
+            lb = _label(md_html(seg[1], c.get("user_code", c["code"])))
             lb.ensurePolished()     # Schriftgröße aus dem Stylesheet übernehmen
             fm = lb.fontMetrics()   # Blase so breit wie der Text (verhindert zu frühes Umbrechen)
             longest = max((fm.horizontalAdvance(l) for l in seg[1].splitlines()), default=0)
@@ -163,7 +164,6 @@ def user_bubble(text, c, compact, avail=MAX_W, atts=None):
         bl.addWidget(_label("…"))
     bubble.setMaximumWidth(maxw)
     bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-    shadow(bubble, c, blur=20, dy=3)
     lay.addWidget(bubble)
     return row
 
@@ -198,6 +198,60 @@ def tool_chip(call, result, c, waiting=False):
     return chip
 
 
+class TypingDots(QWidget):
+    """„KI arbeitet“: drei Punkte, die nacheinander hüpfen und in der Akzentfarbe aufleuchten."""
+    PERIOD = 1.4      # Sekunden für eine Welle
+    R = 4.0           # Punktradius
+
+    def __init__(self, c):
+        super().__init__()
+        self.base = QColor(c["muted"])
+        self.glow = QColor(c["accent"])
+        self.setFixedSize(84, 36)
+        self.t0 = time.monotonic()
+        self.timer = QTimer(self)
+        self.timer.setInterval(16)
+        self.timer.timeout.connect(self.update)
+
+    def showEvent(self, e):
+        self.timer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self.timer.stop()
+        super().hideEvent(e)
+
+    @staticmethod
+    def _mix(a, b, k):
+        return QColor(int(a.red() + (b.red() - a.red()) * k), int(a.green() + (b.green() - a.green()) * k),
+                      int(a.blue() + (b.blue() - a.blue()) * k))
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        t = (time.monotonic() - self.t0) / self.PERIOD
+        cy = self.height() / 2 + 3
+        for i in range(3):
+            # durchgehende weiche Welle: jeder Punkt gleitet sanft hoch und wieder runter, leicht versetzt
+            k = ((1 - math.cos(2 * math.pi * (t - i * 0.18))) / 2) ** 1.6
+            x = 18 + i * 18
+            y = cy - 5 * k
+            r = self.R * (1 + 0.25 * k)
+            if k > 0.02:      # Leuchten: weicher Schein in der Akzentfarbe
+                halo = QRadialGradient(x, y, r * 3.2)
+                g = QColor(self.glow)
+                g.setAlpha(int(140 * k))
+                halo.setColorAt(0, g)
+                g.setAlpha(0)
+                halo.setColorAt(1, g)
+                p.setBrush(halo)
+                p.drawEllipse(QPointF(x, y), r * 3.2, r * 3.2)
+            p.setBrush(self._mix(self.base, self.glow, k))
+            p.drawEllipse(QPointF(x, y), r, r)
+        p.end()
+
+
 class LiveText(QLabel):
     """Live-Text, der gleichmäßig fließt statt in Schüben zu springen.
 
@@ -220,7 +274,9 @@ class LiveText(QLabel):
         self.setTextFormat(Qt.RichText)
         self.setWordWrap(True)
         self.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # nie breiter als die Spalte: ohne das schiebt eine lange Zeile (Code, Link) den Chat nach rechts raus
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(1)
         if obj:
             self.setObjectName(obj)
         self.timer = QTimer(self)
@@ -504,14 +560,15 @@ def role_label(text):
     return lb
 
 
-def welcome(c):
+def welcome(c, compact=False):
     w = QWidget()
     lay = QVBoxLayout(w)
     lay.setContentsMargins(0, 110, 0, 0)
     t = QLabel("Wie kann ich helfen?")
     t.setObjectName("WelcomeTitle")
     t.setAlignment(Qt.AlignCenter)
-    s = QLabel("Server, Modell und Profil oben wählen · Strg+K = Kompakt-Modus")
+    s = QLabel("Modell und Profil unten rechts wechseln · F1 = Hilfe" if compact else
+               "Server, Modell und Profil oben wählen · F1 = Hilfe")
     s.setObjectName("Muted")
     s.setAlignment(Qt.AlignCenter)
     s.setWordWrap(True)
@@ -577,7 +634,7 @@ class ChatView(QScrollArea):
         tmsgs = {m.get("tool_call_id"): m for m in messages if m["role"] == "tool"}
         specs, prev = [], None
         if not messages and live is None:
-            return [(("welcome", theme), lambda: welcome(c))]
+            return [(("welcome", theme, compact), lambda: welcome(c, compact))]
         for i, m in enumerate(messages):
             if summary_at and i == summary_at:
                 specs.append((("sum", i, hash(summary), theme), lambda: summary_divider(summary, c)))
@@ -599,7 +656,9 @@ class ChatView(QScrollArea):
                 t = m["_text"] if "_text" in m else (m.get("content") or "")
                 if m.get("_auto"):
                     t = "📸 Screenshot für das Modell"
-                avail = max(240, self.viewport().width() - 60)
+                # Breite ohne Scrollleiste messen: sonst ändert sich der Schlüssel, sobald die Leiste
+                # erscheint → Blase und laufende Antwort würden neu gebaut und das Scrollen springt
+                avail = max(240, self.width() - 60)
                 specs.append((("u", i, hash(t), len(atts), theme, compact, avail // 40),
                               lambda t=t, a=avail, atts=atts: user_bubble(t, c, compact, a, atts)))
             elif r == "assistant":
@@ -658,7 +717,7 @@ class ChatView(QScrollArea):
             if ct:
                 specs.append((("lc", theme), lambda: self._make_live("ct", c)))
             if not rs and not ct and not pending and not tool_live:
-                specs.append((("dots", theme), lambda: _label(f'<span style="color:{c["muted"]}">● ● ●</span>')))
+                specs.append((("dots", theme), lambda: TypingDots(c)))
         if pending:
             specs.append((("confirm", id(pending), theme),
                           lambda: confirm_card(pending, c, lambda ch: self.on_confirm and self.on_confirm(ch))))

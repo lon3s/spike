@@ -7,15 +7,17 @@ import re
 import threading
 import time
 
-from PySide6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QAction, QColor, QConicalGradient, QDesktopServices, QKeySequence, QPainter,
-                           QPainterPath, QPen, QRegion)
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (QAction, QColor, QConicalGradient, QDesktopServices, QKeySequence, QLinearGradient, QPainter,
+                           QPainterPath, QPalette, QPen, QRegion)
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QApplication, QCheckBox, QComboBox, QSizePolicy, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QColorDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
-    QVBoxLayout, QWidget,
+    QMenu, QPlainTextEdit, QProgressBar, QPushButton, QSlider, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
+    QToolButton, QVBoxLayout, QWidget,
 )
+
+from html import escape as html_escape
 
 from . import config as C
 from .agent import Agent
@@ -414,7 +416,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._memory_tab(s), "Gedächtnis && Kontext")
         tabs.addTab(self._mcp_tab(s), "MCP-Server")
         tabs.addTab(self._speech_tab(s), "Sprache")
-        tabs.addTab(self._glow_tab(s), "Popup-Rahmen")
+        tabs.addTab(self._glow_tab(s), "Popup")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
@@ -723,8 +725,75 @@ class SettingsDialog(QDialog):
         hint = QLabel("Das Licht läuft im Uhrzeigersinn um den Rahmen. Farbe anklicken zum Ändern, "
                       "„+“ fügt eine Farbe hinzu, Rechtsklick auf eine Farbe entfernt sie.")
         hint.setWordWrap(True)
+        hint.setObjectName("Muted")
         f.addRow(hint)
+
+        head = QLabel("<b>Hintergrund</b>")
+        head.setContentsMargins(0, 12, 0, 0)
+        f.addRow(head)
+        self.cb_pbg = QComboBox()
+        self.cb_pbg.addItem("Grau", "grau")
+        self.cb_pbg.addItem("Wie das große Fenster", "standard")
+        self.cb_pbg.addItem("Eigene Farbe", "eigen")
+        self.cb_pbg.setCurrentIndex(max(0, self.cb_pbg.findData(s.get("popup_bg", "grau"))))
+        self.pbg_color = s.get("popup_bg_color") or "#2b2f3a"
+        self.btn_pbg = QPushButton()
+        self.btn_pbg.setFixedSize(34, 28)
+        self.btn_pbg.setToolTip("Farbe wählen")
+        self.btn_pbg.clicked.connect(self._pick_pbg)
+        prow = QHBoxLayout()
+        prow.setContentsMargins(0, 0, 0, 0)
+        prow.addWidget(self.cb_pbg, 1)
+        prow.addWidget(self.btn_pbg)
+        pw = QWidget()
+        pw.setLayout(prow)
+        f.addRow("Fläche", pw)
+        self.sl_pbg_op = QSlider(Qt.Horizontal)
+        self.sl_pbg_op.setRange(20, 100)
+        self.sl_pbg_op.setSingleStep(5)
+        self.sl_pbg_op.setPageStep(10)
+        self.sl_pbg_op.setValue(int(s.get("popup_bg_opacity", 100)))
+        op_lb = QLabel()
+        op_lb.setMinimumWidth(48)
+        self.sl_pbg_op.valueChanged.connect(lambda v: op_lb.setText(f"{v} %"))
+        op_lb.setText(f"{self.sl_pbg_op.value()} %")
+        orow = QHBoxLayout()
+        orow.setContentsMargins(0, 0, 0, 0)
+        orow.addWidget(self.sl_pbg_op, 1)
+        orow.addWidget(op_lb)
+        ow = QWidget()
+        ow.setLayout(orow)
+        ow.setToolTip("100 % = deckend. Weniger lässt den Desktop durchscheinen; Text und Eingabefeld bleiben deckend.")
+        f.addRow("Deckkraft", ow)
+        self.cb_pbg_grad = QCheckBox("Sanfter Verlauf und feine Lichtkante oben")
+        self.cb_pbg_grad.setChecked(bool(s.get("popup_bg_gradient", True)))
+        f.addRow(self.cb_pbg_grad)
+        self.pbg_warn = QLabel()
+        self.pbg_warn.setWordWrap(True)
+        f.addRow(self.pbg_warn)
+        self.cb_pbg.currentIndexChanged.connect(self._pbg_update)
+        self._pbg_update()
         return w
+
+    def _pbg_update(self, *_):
+        eigen = self.cb_pbg.currentData() == "eigen"
+        self.btn_pbg.setVisible(eigen)
+        self.btn_pbg.setStyleSheet(f"background: {self.pbg_color}; border: 1px solid #888; border-radius: 8px;")
+        warn = ""
+        if eigen:
+            light_bg = QColor(self.pbg_color).lightness() >= 128
+            light_theme = QApplication.palette().color(QPalette.Window).lightness() >= 128
+            if light_bg != light_theme:
+                warn = ("⚠ Die Farbe ist " + ("hell" if light_bg else "dunkel") + ", das Thema aber " +
+                        ("hell" if light_theme else "dunkel") + " – die Schrift wäre schlecht lesbar.")
+        self.pbg_warn.setText(warn)
+        self.pbg_warn.setVisible(bool(warn))
+
+    def _pick_pbg(self):
+        col = QColorDialog.getColor(QColor(self.pbg_color), self, "Hintergrund des Popups")
+        if col.isValid():
+            self.pbg_color = col.name()
+            self._pbg_update()
 
     def _glow_buttons(self):
         while self.glow_row.count():
@@ -808,6 +877,8 @@ class SettingsDialog(QDialog):
                  popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
                  popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
                  popup_glow_width=self.sp_glow_width.value(),
+                 popup_bg=self.cb_pbg.currentData(), popup_bg_color=self.pbg_color,
+                 popup_bg_gradient=self.cb_pbg_grad.isChecked(), popup_bg_opacity=self.sl_pbg_op.value(),
                  memory_enabled=self.cb_mem.isChecked(), memory_prompt_chars=self.sp_mem.value(),
                  auto_compact=self.cb_compact.isChecked(), compact_at_percent=self.sp_cat.value(),
                  compact_keep_percent=self.sp_ckeep.value(), python_timeout=self.sp_pyto.value(),
@@ -953,7 +1024,213 @@ class PopupShell(QWidget):
             alpha = int((10 if dark else 5) * (1 - i / self.PAD) ** 1.6 * 2.2)
             p.setBrush(QColor(0, 0, 0, alpha))
             p.drawRoundedRect(r.adjusted(-i, -i, i, i), self.RADIUS + i, self.RADIUS + i)
+        # Hintergrund (Farbe aus den Einstellungen, auf Wunsch mit sanftem Verlauf und Lichtkante)
+        f = QRectF(self.frame.geometry())
+        top, bottom, edge = popup_bg(self.win.cfg["settings"], self.win.colors)
+        grad = QLinearGradient(f.topLeft(), f.bottomLeft())
+        grad.setColorAt(0, top)
+        grad.setColorAt(1, bottom)
+        p.setBrush(grad)
+        p.drawRoundedRect(f, self.RADIUS, self.RADIUS)
+        if edge:
+            g2 = QLinearGradient(f.topLeft(), f.topLeft() + QPointF(0, 60))
+            g2.setColorAt(0, edge)
+            g2.setColorAt(1, QColor(edge.red(), edge.green(), edge.blue(), 0))
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(g2, 1))
+            p.drawRoundedRect(f.adjusted(1.5, 1.5, -1.5, -1.5), self.RADIUS - 1.5, self.RADIUS - 1.5)
         p.end()
+
+    def restyle(self):
+        """Rahmenlinie bleibt, Fläche malt paintEvent; Eingabefeld passend zur Fläche anheben."""
+        c = self.win.colors
+        self.frame.setStyleSheet(f"#PopupFrame {{ background: transparent; border: 1px solid {c['border']};"
+                                 f"border-radius: {self.RADIUS}px; }}")
+        top, bottom, _ = popup_bg(self.win.cfg["settings"], c)
+        comp = getattr(self.win, "composer", None)
+        if comp is not None:
+            if self.win.cfg["settings"].get("popup_bg", "grau") == "standard" \
+                and int(self.win.cfg["settings"].get("popup_bg_opacity", 100)) >= 100:
+                comp.setStyleSheet("")
+            else:
+                mid = QColor((top.red() + bottom.red()) // 2, (top.green() + bottom.green()) // 2,
+                             (top.blue() + bottom.blue()) // 2)
+                lift = mid.lighter(122) if mid.lightness() < 128 else QColor("#ffffff")
+                lift.setAlpha(255)
+                comp.setStyleSheet(f"#Composer {{ background: {lift.name()}; border: 1px solid {c['border']};"
+                                   f"border-radius: 20px; }}")
+        self.update()
+
+
+POPUP_GREY = {"dark": "#25262c", "light": "#ececef"}
+
+
+def popup_bg(s, c):
+    """(Farbe oben, Farbe unten, Lichtkante oder None) für die Popup-Fläche."""
+    mode = s.get("popup_bg", "grau")
+    if mode == "eigen" and QColor(s.get("popup_bg_color", "")).isValid():
+        base = QColor(s["popup_bg_color"])
+    elif mode == "grau":
+        base = QColor(POPUP_GREY.get(c.get("name"), "#25262c"))
+    else:
+        base = QColor(c["bg"])
+    alpha = max(10, min(100, int(s.get("popup_bg_opacity", 100)))) * 255 // 100
+    if not s.get("popup_bg_gradient", True):
+        base.setAlpha(alpha)
+        return base, QColor(base), None
+    dark = base.lightness() < 128
+    top = base.lighter(114) if dark else base.lighter(103)
+    bottom = base.darker(112) if dark else base.darker(104)
+    top.setAlpha(alpha)
+    bottom.setAlpha(alpha)
+    edge = QColor(255, 255, 255, 34) if dark else QColor(255, 255, 255, 200)
+    return top, bottom, edge
+
+
+class HelpDialog(QDialog):
+    """Bedienungsanleitung: alles Wichtige an einem Ort statt in Tooltips."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.setWindowTitle("spike – Hilfe")
+        self.resize(640, 720)
+        c = win.colors
+        view = QTextBrowser()
+        view.setOpenExternalLinks(True)
+        view.setStyleSheet(f"QTextBrowser {{ background: {c['bg']}; border: none; padding: 6px 14px; }}")
+        view.document().setDefaultStyleSheet(
+            f"h2 {{ color: {c['accent']}; margin-top: 18px; margin-bottom: 4px; }}"
+            f"h1 {{ margin-bottom: 2px; }} td {{ padding: 3px 10px 3px 0; vertical-align: top; }}"
+            f"code, .k {{ background: {c['panel2']}; color: {c['text']}; font-family: monospace; }}"
+            f".m {{ color: {c['muted']}; }} li {{ margin-bottom: 3px; }}")
+        view.setHtml(self._html(win))
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 10)
+        lay.addWidget(view, 1)
+        h = QHBoxLayout()
+        h.setContentsMargins(14, 0, 14, 0)
+        h.addWidget(QLabel("Diese Hilfe: F1 oder /hilfe"), 1)
+        h.addWidget(btns)
+        lay.addLayout(h)
+
+    @staticmethod
+    def _keys(rows):
+        return "<table>" + "".join(f"<tr><td><span class='k'>&nbsp;{k}&nbsp;</span></td><td>{d}</td></tr>"
+                                   for k, d in rows) + "</table>"
+
+    def _html(self, win):
+        cmds = "".join(
+            f"<tr><td><code>{html_escape(n)}{(' ' + html_escape(a)) if a else ''}</code></td>"
+            f"<td>{html_escape(d)}{('<br><span class=m>auch: ' + html_escape(', '.join(al)) + '</span>') if al else ''}"
+            f"</td></tr>" for n, al, a, d in win.COMMANDS)
+        return f"""
+<h1>spike – so geht's</h1>
+<p class=m>Ein Chat für deine eigenen KI-Server, der im Tray wohnt.</p>
+
+<h2>Öffnen</h2>
+<ul>
+<li><b>Klick aufs Tray-Symbol</b> – Chat-Popup unten rechts (Klick daneben schließt es, 📌 hält es offen)</li>
+<li><b>Mittelklick</b> aufs Tray-Symbol – großes Fenster</li>
+<li><b>Rechtsklick</b> aufs Tray-Symbol – Menü (neuer Chat, markierten Text bearbeiten, Hilfe, Beenden)</li>
+<li>Im Popup bringt <b>⤢</b> denselben Chat ins große Fenster.</li>
+</ul>
+
+<h2>Schreiben</h2>
+{self._keys([("Enter", "Senden"), ("Shift+Enter", "Neue Zeile"),
+             ("Esc", "Antwort stoppen · Befehlsliste schließen · Popup schließen"),
+             ("/", "Befehlsliste öffnen (siehe unten)"),
+             ("!befehl", "Befehl direkt im Terminal ausführen, z. B. <code>!ls ~</code>")])}
+
+<h2>Server, Modell und Profil</h2>
+<ul>
+<li><b>Großes Fenster:</b> die drei Auswahlfelder oben.</li>
+<li><b>Popup:</b> unten rechts auf den Modellnamen bzw. das Profil klicken – dort auch Server wechseln und „Denken“ an/aus.</li>
+<li>Die Auswahl gilt für beide Fenster und bleibt gespeichert.</li>
+<li><b>Profile</b> legen fest, welche Werkzeuge die KI benutzen darf (Dateien, Shell, Browser …) und welchen System-Prompt sie bekommt.
+Bearbeiten unter ⚙ Einstellungen → Profile.</li>
+<li><b>Denken aus</b> macht Antworten deutlich schneller, dafür überlegt das Modell weniger.</li>
+</ul>
+
+<h2>Wenn die KI etwas tun will</h2>
+<ul>
+<li>Bei heiklen Aktionen (Shell, Dateien ändern …) erscheint eine <b>Freigabe-Karte</b>:
+<b>Ja</b>, <b>Immer</b> (für diesen Chat) oder <b>Nein</b>. Bei „Nein“ kannst du ins Eingabefeld schreiben, was sie stattdessen tun soll.</li>
+<li>Dateiänderungen zeigen einen Diff – <b>↶</b> daran oder <code>/undo</code> macht sie rückgängig.</li>
+</ul>
+
+<h2>Dateien, Bilder, Bildschirm</h2>
+<ul>
+<li><b>📎</b>, Datei ins Fenster ziehen oder <b>Strg+V</b> – hängt Dateien, PDFs und Bilder an.</li>
+<li><code>/screenshot</code> hängt ein Bildschirmfoto an. Bilder versteht nur ein Modell mit Vision.</li>
+</ul>
+
+<h2>Sprache</h2>
+<ul>
+<li><b>🎤</b> oder <b>Strg+M</b>: klicken, sprechen, nochmal klicken – der Text landet im Eingabefeld.</li>
+<li><b>🔊 Vorlesen</b> unter einer Antwort; Stimme unter ⚙ Einstellungen → Sprache oder mit <code>/stimme</code>.</li>
+</ul>
+
+<h2>Gedächtnis und Kontext</h2>
+<ul>
+<li>Der Balken unten zeigt, wie voll der Kontext des Modells ist. Wird es eng, fasst spike ältere Nachrichten automatisch zusammen (📦) – oder sofort mit <code>/compact</code>.</li>
+<li><code>/merk &lt;Text&gt;</code> merkt sich etwas dauerhaft für alle Chats.</li>
+<li>Erinnerungen einfach sagen: „erinnere mich in 20 Minuten an den Tee“.</li>
+</ul>
+
+<h2>Markierten Text bearbeiten</h2>
+<p>Text irgendwo markieren und <code>spike --text</code> per Tastenkürzel starten (in KDE mit vollem Pfad
+<code>~/.local/bin/spike --text</code>) – dann z. B. übersetzen, kürzen oder korrigieren lassen.</p>
+
+<h2>Tastenkürzel</h2>
+{self._keys([("F1", "Diese Hilfe"), ("Strg+N", "Neuer Chat"), ("Strg+K", "Kompakt-Modus (großes Fenster)"),
+             ("Strg+B", "Seitenleiste ein/aus"), ("Strg+M", "Diktieren"), ("Strg+V", "Bild/Datei einfügen"),
+             ("Esc", "Stopp / schließen")])}
+
+<h2>Alle Befehle</h2>
+<p class=m>„/“ ins Eingabefeld tippen – die Liste filtert beim Weitertippen, Tab/Enter übernimmt.</p>
+<table>{cmds}</table>
+
+<h2>Aussehen</h2>
+<p>⚙ Einstellungen → <b>Popup</b>: Leuchtrahmen, Hintergrundfarbe, Verlauf und Durchsichtigkeit.
+<b>◐</b> im großen Fenster wechselt hell/dunkel.</p>
+<p class=m><br>spike ist Open Source (MIT): <a href="https://github.com/lon3s/spike">github.com/lon3s/spike</a></p>
+"""
+
+
+class _ElideButton(QToolButton):
+    """Knopf, der seinen Text mit „…“ kürzt statt das Fenster zu verbreitern."""
+    def __init__(self, keep=44):
+        super().__init__()
+        self._full, self._keep = "", keep     # keep: so viel Breite bleibt mindestens
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def setText(self, text):
+        self._full = text
+        self._elide()
+        self.updateGeometry()
+
+    def _elide(self):
+        body, arrow = (self._full[:-2], " ▾") if self._full.endswith(" ▾") else (self._full, "")
+        fm = self.fontMetrics()
+        room = self.width() - 14 - fm.horizontalAdvance(arrow)
+        super().setText(fm.elidedText(body, Qt.ElideRight, max(room, 10)) + arrow)
+
+    def sizeHint(self):
+        h = super().sizeHint()
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 16, h.height())
+
+    def minimumSizeHint(self):
+        return QSize(min(self._keep, self.sizeHint().width()), super().minimumSizeHint().height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._elide()
 
 
 def _icon_btn(text, tip, slot):
@@ -1061,6 +1338,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.cb_profile)
         top.addWidget(_icon_btn("⟳", "Modelle neu laden", self.refresh_models))
         top.addStretch(0)
+        top.addWidget(_icon_btn("?", "Hilfe und Bedienung (F1)", self.show_help))
         top.addWidget(_icon_btn("◐", "Hell/Dunkel umschalten", self.toggle_theme))
         top.addWidget(_icon_btn("⤡", "Kompakt-Modus (Strg+K)", self.toggle_compact))
         self.cb_ep.currentTextChanged.connect(self._ep_changed)
@@ -1075,8 +1353,6 @@ class MainWindow(QMainWindow):
         self.view.on_undo = self.undo_change
         self.input = InputBox()
         self.input.setPlaceholderText("Nachricht schreiben …")
-        self.input.setToolTip("Enter = senden · Shift+Enter = neue Zeile · Esc = Stopp\n"
-                              "/ = Befehle · !befehl = im Terminal ausführen")
         self.input.submitted.connect(self.send)
         self.btn_send = QPushButton("➤")
         self.btn_send.setObjectName("Primary")
@@ -1140,18 +1416,27 @@ class MainWindow(QMainWindow):
         self.meta_bar = QProgressBar()
         self.meta_bar.setObjectName("MetaBar")
         self.meta_bar.setTextVisible(False)
-        self.meta_bar.setFixedSize(70, 5)
+        self.meta_bar.setFixedSize(50, 5)
         self.meta_ctx = QLabel("Kontext –")
         self.meta_speed = QLabel("")
-        self.meta_model = QLabel("")
-        for lb in (self.meta_ctx, self.meta_speed, self.meta_model):
+        for lb in (self.meta_ctx, self.meta_speed):
             lb.setObjectName("MetaText")
-        self.meta_model.setTextInteractionFlags(Qt.NoTextInteraction)
+        # Modell/Server und Profil/Denken direkt hier umschalten (Dropdown-Menüs)
+        self.meta_model = self._meta_button(self._fill_model_menu)
+        self.meta_profile = self._meta_button(self._fill_profile_menu, keep=130)
         ml_.addWidget(self.meta_bar, 0, Qt.AlignVCenter)
         ml_.addWidget(self.meta_ctx)
         ml_.addWidget(self.meta_speed)
         ml_.addStretch(1)
         ml_.addWidget(self.meta_model)
+        ml_.addWidget(self.meta_profile)
+        meta_help = QToolButton()
+        meta_help.setObjectName("MetaBtn")
+        meta_help.setText("?")
+        meta_help.setToolTip("Hilfe und Bedienung (F1)")
+        meta_help.setCursor(Qt.PointingHandCursor)
+        meta_help.clicked.connect(self.show_help)
+        ml_.addWidget(meta_help)
         self._last_tps = 0.0
         self._ctx_used = 0
         crow = QVBoxLayout()
@@ -1203,7 +1488,8 @@ class MainWindow(QMainWindow):
         self.statusBar().setSizeGripEnabled(False)
 
         for keys, slot in (("Ctrl+N", self.new_chat), ("Ctrl+K", self.toggle_compact), ("Ctrl+M", self.toggle_record),
-                           ("Ctrl+B", self.toggle_side), ("Escape", self.escape)):
+                           ("Ctrl+B", self.toggle_side), ("Escape", self.escape),
+                           ("F1", self.show_help)):
             act = QAction(self)
             act.setShortcut(QKeySequence(keys))
             act.triggered.connect(slot)
@@ -1259,6 +1545,9 @@ class MainWindow(QMainWindow):
         app.setPalette(palette(self.colors))
         app.setStyleSheet(qss(self.colors))
         shadow(self.composer, self.colors, blur=28, dy=6)
+        shell = self.centralWidget()
+        if isinstance(shell, PopupShell):
+            shell.restyle()
         if self.chat is not None:
             self.redraw()
 
@@ -1372,6 +1661,7 @@ class MainWindow(QMainWindow):
         self.cb_model.blockSignals(False)
         self._sync_chat_settings()
         self._estimate()
+        self._update_meta()
         ctx = n_ctx or self.cfg["settings"]["default_n_ctx"]
         self.status.setText(f"●  {name} verbunden · {len(models)} Modell(e) · Kontext {ctx:,}".replace(",", "."))
 
@@ -2034,7 +2324,7 @@ class MainWindow(QMainWindow):
         self._update_meta()
 
     def _speed(self, tps):
-        self.meta_speed.setText(f"⚡ {tps:.1f} tok/s")
+        self.meta_speed.setText(f"⚡ {tps:.0f} tok/s")
 
     def _update_meta(self):
         fmt = lambda n: f"{n / 1000:.1f}k" if n >= 1000 else str(n)
@@ -2046,22 +2336,92 @@ class MainWindow(QMainWindow):
         self.meta_bar.setStyleSheet(f"QProgressBar#MetaBar {{ background: {self.colors['border']}; border: none;"
                                     f"border-radius: 2px; }} QProgressBar#MetaBar::chunk {{ background: {col};"
                                     f"border-radius: 2px; }}")
-        summ = " · 📦 zusammengefasst" if self.chat and self.chat.get("summary") else ""
-        self.meta_ctx.setText(f"Kontext {pct} % · {fmt(used)} / {fmt(n)}{summ}" if n else "Kontext –")
-        tip = f"Belegt: {used:,} von {n:,} Tokens".replace(",", ".")
+        summ = " · 📦" if self.chat and self.chat.get("summary") else ""
+        self.meta_ctx.setText(f"{pct} % · {fmt(used)} / {fmt(n)}{summ}" if n else "Kontext –")
+        tip = f"Kontext: {used:,} von {n:,} Tokens belegt ({pct} %)".replace(",", ".")
         if summ:
-            tip += f"\nÄlterer Verlauf ist zusammengefasst (bis Nachricht {self.chat.get('summary_upto')})."
+            tip += f"\n📦 Älterer Verlauf ist zusammengefasst (bis Nachricht {self.chat.get('summary_upto')})."
         tip += "\n/compact fasst den Verlauf jetzt zusammen."
         self.meta_ctx.setToolTip(tip)
         if not self.agent:
-            self.meta_speed.setText(f"⚡ {self._last_tps:.1f} tok/s" if self._last_tps else "")
+            self.meta_speed.setText(f"⚡ {self._last_tps:.0f} tok/s" if self._last_tps else "")
         model = (self.model_id() or "").rsplit("/", 1)[-1].removesuffix(".gguf")
         if len(model) > 26:
             model = model[:25] + "…"
-        think = {"an": "💭 an", "aus": "💭 aus"}.get(self.profile().get("thinking", "standard"), "")
-        self.meta_model.setText(" · ".join(x for x in (model, self.cb_profile.currentText(), think) if x))
+        think = {"an": " · 💭 an", "aus": " · 💭 aus"}.get(self.profile().get("thinking", "standard"), "")
+        self.meta_model.setText(f"{model or 'Modell'} ▾")
         self.meta_model.setToolTip(f"Server: {self.cb_ep.currentText()}\nModell: {self.model_id()}\n"
-                                   f"Profil: {self.cb_profile.currentText()}\n(/modell, /profil, /server zum Wechseln)")
+                                   "Klick: Modell oder Server wechseln")
+        self.meta_profile.setText(f"{self.cb_profile.currentText() or 'Profil'}{think} ▾")
+        self.meta_profile.setToolTip(f"Profil: {self.cb_profile.currentText()}\nKlick: Profil oder Denken wechseln")
+
+    # --- Dropdowns in der Infozeile ---
+    def _meta_button(self, filler, keep=44):
+        b = _ElideButton(keep)
+        b.setObjectName("MetaBtn")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b)
+        m.aboutToShow.connect(lambda m=m: (m.clear(), filler(m)))
+        b.setMenu(m)
+        return b
+
+    @staticmethod
+    def _menu_choice(menu, group, label, checked, slot):
+        a = menu.addAction(label)
+        a.setCheckable(True)
+        a.setChecked(checked)
+        group.append(a)
+        a.triggered.connect(slot)
+        return a
+
+    @staticmethod
+    def _menu_head(m, text):
+        if m.actions():
+            m.addSeparator()
+        m.addAction(text).setEnabled(False)
+
+    def _fill_model_menu(self, m):
+        self._menu_head(m, "Modell")
+        grp = []
+        cur = self.model_id()
+        for i in range(self.cb_model.count()):
+            mid = self.cb_model.itemData(i) or self.cb_model.itemText(i)
+            self._menu_choice(m, grp, self.cb_model.itemText(i), mid == cur,
+                              lambda _=False, i=i: self._meta_pick(self.cb_model, i))
+        if not grp:
+            m.addAction("(keine Modelle geladen)").setEnabled(False)
+        self._menu_head(m, "Server")
+        for i in range(self.cb_ep.count()):
+            self._menu_choice(m, grp, self.cb_ep.itemText(i), i == self.cb_ep.currentIndex(),
+                              lambda _=False, i=i: self._meta_pick(self.cb_ep, i))
+        m.addSeparator()
+        m.addAction("⟳  Modelle neu laden", self.refresh_models)
+
+    def _fill_profile_menu(self, m):
+        self._menu_head(m, "Profil")
+        grp = []
+        for i in range(self.cb_profile.count()):
+            self._menu_choice(m, grp, self.cb_profile.itemText(i), i == self.cb_profile.currentIndex(),
+                              lambda _=False, i=i: self._meta_pick(self.cb_profile, i))
+        self._menu_head(m, "Denken")
+        cur = self.profile().get("thinking", "standard")
+        for val, label in (("standard", "Standard (wie Server)"), ("an", "💭 an"), ("aus", "aus – schneller")):
+            self._menu_choice(m, grp, label, cur == val, lambda _=False, v=val: self._meta_think(v))
+
+    def _meta_pick(self, cb, i):
+        cb.setCurrentIndex(i)          # löst dieselben Signale aus wie im großen Fenster
+        self._update_meta()
+        self._estimate()
+        self.input.setFocus()
+
+    def _meta_think(self, val):
+        prof = self.profile()
+        if prof:
+            prof["thinking"] = val
+            C.save_config(self.cfg)
+        self._update_meta()
+        self.input.setFocus()
 
     # --- /Befehle ---
     COMMANDS = [
@@ -2084,7 +2444,7 @@ class MainWindow(QMainWindow):
         ("/einstellungen", ("/settings",), "", "Einstellungen öffnen"),
         ("/index", ("/reindex",), "", "Laufwerks-Index für die Dateisuche jetzt erneuern"),
         ("/quit", ("/beenden", "/exit"), "", "spike beenden"),
-        ("/hilfe", ("/help",), "", "Alle Befehle zeigen"),
+        ("/hilfe", ("/help",), "", "Bedienungsanleitung öffnen (F1)"),
     ]
 
     def _cmd_lookup(self, word):
@@ -2289,11 +2649,13 @@ class MainWindow(QMainWindow):
             else:
                 QApplication.quit()
         elif name == "/hilfe":
-            self.input.setPlainText("/")
-            cur = self.input.textCursor()
-            cur.movePosition(cur.MoveOperation.End)
-            self.input.setTextCursor(cur)
+            self.show_help()
         return True
+
+    def show_help(self):
+        self.input.clear()
+        HelpDialog(self).exec()
+        self.input.setFocus()
 
     def compact_now(self, hint=""):
         if self.agent or self.chat is None or not self.endpoint():
@@ -2373,7 +2735,7 @@ class MainWindow(QMainWindow):
         if self.btn_pin.isChecked():
             return
         if self.isVisible() and not self.isActiveWindow() and QApplication.activeModalWidget() is None \
-                and QApplication.activeWindow() is None:
+                and QApplication.activePopupWidget() is None and QApplication.activeWindow() is None:
             self.hide()
 
     def showEvent(self, e):

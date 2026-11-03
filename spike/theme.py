@@ -11,13 +11,13 @@ THEMES = {
     "dark": {
         "name": "dark", "bg": "#14151a", "panel": "#1b1c22", "panel2": "#24252d", "border": "#30313b",
         "text": "#e7e7ec", "muted": "#8a8c99", "accent": "#7c6cf0", "accent_hover": "#8f81f5",
-        "accent_text": "#ffffff", "user": "#2a2748", "code": "#0d0e12", "chip": "#22232b",
+        "accent_text": "#ffffff", "user": "#2a2748", "user_top": "#7a69f3", "user_bottom": "#5443d2", "user_code": "#4535c2", "code": "#0d0e12", "chip": "#22232b",
         "danger": "#e5676b", "sel": "#2f2b55",
     },
     "light": {
         "name": "light", "bg": "#f7f7f9", "panel": "#ffffff", "panel2": "#efeff3", "border": "#dedee5",
         "text": "#1c1c22", "muted": "#6c6e7a", "accent": "#6a5ae0", "accent_hover": "#5a4ad0",
-        "accent_text": "#ffffff", "user": "#ebe8ff", "code": "#f1f1f5", "chip": "#f0f0f4",
+        "accent_text": "#ffffff", "user": "#ebe8ff", "user_top": "#7d6df2", "user_bottom": "#5d4ce0", "user_code": "#4b3bd0", "code": "#f1f1f5", "chip": "#f0f0f4",
         "danger": "#c9444a", "sel": "#e3dfff",
     },
 }
@@ -43,7 +43,10 @@ def qss(c) -> str:
     #TopBar {{ background: {c['bg']}; border-bottom: 1px solid {c['border']}; }}
     #Composer {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 20px; }}
     QScrollArea#Chat, #ChatInner, #ChatColumn {{ background: {c['bg']}; border: none; }}
-    #UserBubble {{ background: {c['user']}; border-radius: 18px; border-bottom-right-radius: 6px; }}
+    #UserBubble {{ background: qlineargradient(x1:0, y1:0, x2:0.35, y2:1, stop:0 {c['user_top']},
+                   stop:1 {c['user_bottom']}); border: 1px solid rgba(255, 255, 255, 30);
+                   border-radius: 18px; border-bottom-right-radius: 8px; }}
+    #UserBubble QLabel {{ color: #ffffff; background: transparent; }}
     #Code {{ background: {c['code']}; border: 1px solid {c['border']}; border-radius: 12px; }}
     #CodeLang {{ color: {c['muted']}; font-size: 8.5pt; font-weight: 600; }}
     #CodeText {{ color: {c['text']}; background: transparent; }}
@@ -105,6 +108,17 @@ def qss(c) -> str:
     QToolTip {{ background: {c['panel2']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 4px; }}
     QLabel#Muted {{ color: {c['muted']}; }}
     QLabel#MetaText {{ color: {c['muted']}; font-size: 8.5pt; }}
+    QToolButton#MetaBtn {{ color: {c['muted']}; font-size: 8.5pt; background: transparent; border: none;
+                          border-radius: 6px; padding: 1px 6px; }}
+    QToolButton#MetaBtn:hover {{ color: {c['text']}; background: {c['panel2']}; }}
+    QToolButton#MetaBtn::menu-indicator {{ image: none; width: 0; }}
+    QMenu {{ background: {c['panel']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 8px;
+            padding: 4px; }}
+    QMenu::item {{ padding: 4px 20px 4px 24px; border-radius: 5px; }}
+    QMenu::item:selected {{ background: {c['sel']}; }}
+    QMenu::item:disabled {{ color: {c['muted']}; }}
+    QMenu::section {{ color: {c['muted']}; font-size: 8pt; padding: 6px 8px 2px 8px; background: transparent; }}
+    QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 6px; }}
     QListWidget#CmdList {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 12px;
                           padding: 4px; outline: none; }}
     QListWidget#CmdList::item {{ padding: 4px 8px; border-radius: 7px; color: {c['text']}; }}
@@ -125,6 +139,7 @@ def md_html(text: str, code_bg: str) -> str:
     m = _BODY.search(d.toHtml())
     body = m.group(1) if m else html.escape(text)
     body = body.replace("font-family:'monospace';", f"font-family:'monospace'; background-color:{code_bg};")
+    body = body.replace("<pre ", '<pre style="white-space: pre-wrap;" ')   # lange Code-Zeilen umbrechen
     return _PRE_RUN.sub(
         lambda mm: f'<table width="100%" cellpadding="10" cellspacing="0" bgcolor="{code_bg}" '
                    f'style="margin-top:4px; margin-bottom:6px;"><tr><td>{mm.group(1)}</td></tr></table>',

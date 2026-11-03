@@ -67,6 +67,7 @@ class Controller:
         menu.addAction("Neuer Chat", self.new_chat_popup)
         menu.addAction("Markierten Text bearbeiten", self.text_action)
         menu.addSeparator()
+        menu.addAction("Hilfe", self.show_help)
         menu.addAction("Beenden", self.quit)
         self.menu = menu
         self.tray.setContextMenu(menu)
@@ -133,6 +134,10 @@ class Controller:
         self.main.show()
         self.main.raise_()
         self.main.activateWindow()
+
+    def show_help(self):
+        self.show_main()
+        self.main.show_help()
 
     def quit(self):
         for w in (self.main, self.popup):
