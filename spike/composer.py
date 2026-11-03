@@ -120,7 +120,7 @@ class Composer(QWidget):
         lay = self.layout()
         pad = {"neon": 4, "glas": 2}.get(self.style_name, 0)
         if lay is not None:
-            lay.setContentsMargins(10 + pad, 6 + pad, 6 + pad, 6 + pad)
+            lay.setContentsMargins(10 + pad, 6 + pad, 10 + pad, 6 + pad)
         term = self.style_name == "terminal"
         if self.input is not None:
             self.input.block_cursor = term

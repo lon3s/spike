@@ -1514,7 +1514,9 @@ class MainWindow(QMainWindow):
         composer.setMaximumWidth(ChatView.MAX_W)
         self.composer = composer
         cl = QHBoxLayout(composer)
-        cl.setContentsMargins(10, 6, 6, 6)
+        # rechts so viel Abstand wie links: bei der starken Rundung (Radius 20) sitzt der Senden-Knopf
+        # sonst optisch zu nah am Rand, obwohl es rechnerisch gleich viel ist wie oben/unten
+        cl.setContentsMargins(10, 6, 10, 6)
         cl.addWidget(self.btn_compact, 0, Qt.AlignBottom)
         self.btn_pin = _icon_btn("📌", "Anheften: Popup bleibt offen, auch wenn du woanders klickst", self.toggle_pin)
         self.btn_pin.setCheckable(True)
@@ -1789,7 +1791,8 @@ class MainWindow(QMainWindow):
         if name != self.cb_ep.currentText():
             return
         if err:
-            self.status.setText(f"❌ {name}: {err}")
+            self.status.setText(f'<span style="color:{self.colors.get("danger", "#e5484d")}">●</span>&nbsp; '
+                                f'{html.escape(name)}: nicht verbunden · {html.escape(str(err))}')
             return
         if n_ctx:
             self.n_ctx[name] = n_ctx
@@ -1814,7 +1817,8 @@ class MainWindow(QMainWindow):
         self._estimate()
         self._update_meta()
         ctx = n_ctx or self.cfg["settings"]["default_n_ctx"]
-        self.status.setText(f"●  {name} verbunden · {len(models)} Modell(e) · Kontext {ctx:,}".replace(",", "."))
+        self.status.setText(f'<span style="color:#3fb950">●</span>&nbsp; {html.escape(name)} verbunden · '
+                            f'{len(models)} Modell(e) · Kontext {ctx:,}'.replace(",", "."))
 
     def model_id(self):
         i = self.cb_model.currentIndex()
