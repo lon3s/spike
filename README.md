@@ -61,14 +61,9 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
 Weitere Piper-Stimmen: ⚙ → Sprache → „Stimmen herunterladen …“ (offizieller Katalog, deutsche zuerst),
 „▶ Probehören“, im Chat `/stimme <name>`.
 
-### Piper installieren (schnelle Stimme ohne GPU)
+Piper und Diktieren installiert `./install.sh --voice --stt` (siehe [Installation](#installation)).
+Wer faster-whisper schon anderswo hat (z. B. pyvideotrans), trägt unter ⚙ → Sprache dessen Python ein.
 
-```bash
-~/spike/.venv/bin/pip install piper-tts          # oder: yay -S piper-tts-bin
-mkdir -p ~/.local/share/spike/piper && cd ~/.local/share/spike/piper
-curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx
-curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json
-```
 - **Markierten Text bearbeiten**: Text irgendwo markieren, Tastenkürzel für `spike --text` drücken (oder Tray-Menü) →
   Popup mit 🌐 Übersetzen, ✏ Korrigieren, 💡 Erklären, 📝 Zusammenfassen, ↩ Antwort formulieren – oder eigene
   Anweisung tippen. Läuft ohne Werkzeuge und ohne Denken (schnell); Übersetzung, Korrektur und Antwort landen
@@ -83,17 +78,57 @@ curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thors
   Medien über MPRIS/`qdbus6`).
 - Chats werden lokal gespeichert (`~/.local/share/spike/chats`).
 
-## Installation (auf jedem PC)
+## Installation
+
+Voraussetzungen: Linux mit Python ≥ 3.10 und `git` (getestet mit KDE Plasma unter Wayland, CachyOS/Arch).
+Debian/Ubuntu brauchen zusätzlich `sudo apt install python3-venv`.
 
 ```bash
-git clone <repo-url> ~/projects/spike
-cd ~/projects/spike
-./install.sh            # oder ./install.sh --no-browser
-spike
+git clone https://github.com/lon3s/spike.git ~/spike
+cd ~/spike
+./install.sh --all
 ```
 
-Die Konfiguration liegt in `~/.config/spike/config.json`. Diese Datei einfach auf die anderen PCs kopieren,
-dann sind dort dieselben Endpunkte und Profile eingerichtet.
+`--all` richtet alles ein: fehlende Zusatzprogramme (fragt nach dem sudo-Passwort), Autostart im Tray,
+Vorlesen mit Piper und Diktieren. Wer es schlanker will, nimmt nur `./install.sh` und hängt einzelne Schalter an:
+
+| Schalter | Wirkung |
+|---|---|
+| `--deps` | fehlende Zusatzprogramme über den Paketmanager installieren (pacman, apt, dnf, zypper) |
+| `--autostart` | beim Anmelden im Tray starten (entfernen: `rm ~/.config/autostart/spike.desktop`) |
+| `--voice` | Piper + deutsche Stimme „thorsten-high“ zum Vorlesen, läuft ohne GPU (~110 MB) |
+| `--stt` | faster-whisper zum Diktieren (das Sprachmodell, ~1,6 GB, lädt beim ersten Diktieren) |
+| `--no-browser` | ohne Playwright/Chromium (spart ~150 MB, dann keine Browser-Werkzeuge) |
+
+Das Skript legt eine eigene Python-Umgebung in `.venv` an, den Befehl `~/.local/bin/spike`, einen Eintrag im
+Startmenü und das Symbol. Am Ende zeigt es, welche optionalen Programme fehlen und wofür sie gebraucht werden –
+spike läuft auch ohne sie, nur die jeweilige Funktion nicht:
+
+| Programm | wofür |
+|---|---|
+| `plocate`, `fd`, `ripgrep` | Dateisuche, `grep` in Projekten |
+| `wl-clipboard` | Zwischenablage, markierten Text bearbeiten |
+| `libnotify` (`notify-send`) | Erinnerungen |
+| `kdialog` | sudo-Passwortabfrage |
+| `spectacle` | `/screenshot` |
+| `pipewire` (`pw-record`), `wireplumber` (`wpctl`), `qt6-tools` (`qdbus6`) | Diktieren, Lautstärke, Mediensteuerung |
+
+**Erster Start:** `spike` im Startmenü oder Terminal. Unter ⚙ Einstellungen → Endpunkte die Adresse des
+LLM-Servers eintragen (z. B. `http://192.168.1.50:8080`, siehe unten) → „Verbindung testen“. F1 öffnet die Hilfe.
+
+**Einstellungen von einem anderen PC übernehmen:** den Ordner `~/.config/spike` kopieren, z. B.
+`scp -r ~/.config/spike nutzer@neuer-pc:~/.config/`. Er enthält Server, Profile, Aussehen und eigene Werkzeuge.
+Achtung: In `config.json` stehen auch API-Keys – nur direkt kopieren, nirgends hochladen.
+
+**Aktualisieren:**
+
+```bash
+cd ~/spike && git pull && ./install.sh
+spike --quit; spike --tray &
+```
+
+**Entfernen:** `spike --quit`, dann `rm -rf ~/spike ~/.local/bin/spike ~/.local/share/applications/spike.desktop
+~/.config/autostart/spike.desktop` (Chats und Einstellungen liegen in `~/.local/share/spike` und `~/.config/spike`).
 
 ## llama.cpp-Server im Netzwerk erreichbar machen
 
@@ -133,7 +168,7 @@ def wetter(ort: str, ctx) -> str:
 spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 
 - **Linksklick**: Das Chat-Popup erscheint unten rechts. Ein Klick daneben schließt es wieder.
-- **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat und Beenden.
+- **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat, Markierten Text bearbeiten, Hilfe und Beenden.
 - **Mittelklick**: großes Fenster.
 - Im Popup öffnet ⤢ denselben Chat im großen Fenster, Esc schließt das Popup.
 - 📌 im Popup heftet es an: Es bleibt offen, auch wenn du woanders klickst. Ein zweiter Klick löst es wieder.
@@ -183,12 +218,18 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 | `/einstellungen` | Einstellungen |
 | `/index` | Laufwerks-Index für die Dateisuche erneuern |
 | `/quit` (`/beenden`) | spike beenden |
-| `/hilfe` | alle Befehle |
+| `/hilfe` | Bedienungsanleitung (auch F1) |
 
-Im Popup und im Kompakt-Modus zeigt eine Zeile unter dem Eingabefeld die Kontext-Belegung, die Geschwindigkeit
-(live während der Antwort) sowie Modell und Profil.
+Im Popup und im Kompakt-Modus zeigt eine Zeile unter dem Eingabefeld die Kontext-Belegung und die Geschwindigkeit
+(live während der Antwort). Ein Klick auf den Modellnamen wechselt Modell oder Server, ein Klick aufs Profil wechselt
+Profil oder „Denken“, **?** öffnet die Hilfe.
+
+**Aussehen des Popups** (⚙ → Popup): Leuchtrahmen (Lauflicht oder Farbverlauf, Farben, Tempo, Breite) und
+Hintergrund (Grau, wie das große Fenster oder eigene Farbe; sanfter Verlauf mit Lichtkante; Deckkraft für
+Durchsichtigkeit).
 
 
+- **F1**: Hilfe mit allen Funktionen, Tastenkürzeln und Befehlen.
 - Enter sendet, Shift+Enter macht eine neue Zeile, Strg+N startet einen neuen Chat, Esc stoppt.
 - **Strg+K**: Kompakt-Modus (nur Verlauf und Eingabe), **Strg+B**: Seitenleiste ein/aus, ◐: hell/dunkel.
 - „Stopp“ bricht die laufende Antwort oder Werkzeugkette ab.
