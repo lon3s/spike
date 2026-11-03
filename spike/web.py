@@ -169,6 +169,15 @@ def blocks(chat) -> list[dict]:
                 f = tc.get("function") or {}
                 res = results.get(tc.get("id"))
                 content = (res or {}).get("content") or ""
+                if f.get("name") == "ask_user":
+                    if res:      # offene Frage zeigt die Live-Karte
+                        try:
+                            q = json.loads(f.get("arguments") or "{}").get("question", "")
+                        except ValueError:
+                            q = ""
+                        out.append({"t": "ask", "q": q, "a": content.replace("Der Nutzer hat gewählt: ", "")
+                                    .replace("Der Nutzer antwortet: ", "")})
+                    continue
                 out.append({"t": "tool", "id": tc.get("id"), "name": f.get("name", ""),
                             "args": short_args(f.get("arguments", ""), 160),
                             "result": _tail(content, 3000) if res else None,
@@ -697,8 +706,13 @@ class Handler(BaseHTTPRequestHandler):
             run = w.runs.get(cid)
             d = self._json()
             if action == "answer" and run and run.agent.pending:
-                c = d.get("choice")
-                run.agent.answer(c in ("yes", "always"), remember=(c == "always"), reason=str(d.get("reason", "")))
+                if run.agent.pending.get("kind") == "ask":      # Rückfrage: Auswahl und/oder eigener Text
+                    ch = d.get("choices")
+                    run.agent.answer_ask(ch if isinstance(ch, list) else [], str(d.get("reason", "")))
+                else:
+                    c = d.get("choice")
+                    run.agent.answer(c in ("yes", "always"), remember=(c == "always"),
+                                     reason=str(d.get("reason", "")))
             elif action == "stop" and run:
                 run.agent.stop()
             elif action == "meta":

@@ -215,3 +215,14 @@ svg{display:block}
 @keyframes blink{50%{opacity:.25}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* Rückfrage (ask_user) */
+.card.ask{border-color:color-mix(in srgb,var(--accent) 60%,var(--border))}
+.card.ask .h,.card.askdone .h{color:var(--text);align-items:flex-start}
+.askopts{display:flex;flex-direction:column;gap:8px;padding:0 12px 10px}
+.askopts .btns{padding:2px 0 0}
+button.askopt{text-align:left;padding:11px 13px;border-radius:11px;font-size:14px;border:1px solid var(--border);background:var(--panel2);color:var(--text)}
+button.askopt.yes{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+label.askopt{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:11px;border:1px solid var(--border);background:var(--panel2);font-size:14px}
+label.askopt input{width:18px;height:18px;accent-color:var(--accent);flex:none}
+.btns button:disabled{opacity:.5}

@@ -147,6 +147,7 @@ function blockHtml(b, last) {
     }
     case "tool": return toolHtml(b, S.live.tool && S.live.tool.id === b.id ? S.live.tool.out : "");
     case "shell": return `<div class="tool"><pre class="term">$ ${esc(b.cmd)}\n${esc(b.out)}${b.exit != null ? `\nexit ${b.exit}` : ""}</pre></div>`;
+    case "ask": return `<div class="card askdone"><div class="h">❓ ${esc(b.q || "Rückfrage")}</div><div class="why">↳ ${esc(b.a)}</div></div>`;
     case "note": return `<div class="note">${attHtml(b.atts)}</div>`;
     case "sum": return `<div class="sum">📦 Älterer Verlauf ist zusammengefasst</div>`;
   }
@@ -171,7 +172,15 @@ function renderLive() {
     const lv = L.live || {};
     if (lv.think && !lv.content) h += `<details class="think"><summary><span class="spin"></span> denkt nach …</summary><div>${esc(lv.think)}</div></details>`;
     if (lv.content) h += `<div class="a cursor">${md(lv.content)}</div>`;
-    if (L.pending) {
+    if (L.pending && L.pending.kind === "ask") {
+      const p = L.pending, o = p.options || [];
+      const opts = p.multi
+        ? o.map((x, i) => `<label class="askopt"><input type="checkbox" data-askcb="${i}"><span>${esc(x)}</span></label>`).join("")
+          + `<div class="btns"><button class="yes" data-askok disabled>Übernehmen</button></div>`
+        : o.map((x, i) => `<button class="askopt${i ? "" : " yes"}" data-ask="${i}">${esc(x)}</button>`).join("");
+      h += `<div class="card ask"><div class="h">❓ ${esc(p.question || "Frage")}</div><div class="askopts">${opts}</div>
+        <div class="hint">${p.multi ? "Ankreuzen und übernehmen" : "Antippen"} – oder unten eine eigene Antwort schreiben.</div></div>`;
+    } else if (L.pending) {
       const p = L.pending;
       h += `<div class="card warn"><div class="h">${ICON.warn}Freigabe nötig</div>
         <pre class="term">${esc(p.text)}</pre>${p.diff ? `<pre class="term">${diffHtml(p.diff)}</pre>` : ""}
@@ -182,7 +191,11 @@ function renderLive() {
     if (L.info && /^[⚠📦]/u.test(L.info)) h += `<div class="info">${esc(L.info)}</div>`;
   }
   if (L.error) h += `<div class="errbox">⚠ ${esc(L.error)}</div>`;
+  const keep = [...box.querySelectorAll("[data-askcb]:checked")].map(cb => cb.dataset.askcb);   // Häkchen behalten
   box.innerHTML = h;
+  keep.forEach(i => { const cb = box.querySelector(`[data-askcb="${i}"]`); if (cb) cb.checked = true; });
+  const ok = box.querySelector("[data-askok]");
+  if (ok) ok.disabled = !box.querySelector("[data-askcb]:checked");
   if (L.tool) {      // Live-Ausgabe eines laufenden Werkzeugs
     const pre = chatEl.querySelector(`[data-out="${CSS.escape(L.tool.id)}"]`);
     if (pre) { pre.textContent = L.tool.out; pre.scrollTop = pre.scrollHeight; if (L.tool.out) pre.closest("details").open = true; }
@@ -194,17 +207,27 @@ function updateButtons() {
   const run = S.live.running, pending = run && S.live.pending;
   $("#send").hidden = run && !pending;
   $("#stop").hidden = !run || pending;
-  $("#input").placeholder = pending ? "Nein, stattdessen …" : run ? "spike antwortet …" : "Nachricht an spike …";
+  $("#input").placeholder = pending ? (pending.kind === "ask" ? "Eigene Antwort …" : "Nein, stattdessen …") : run ? "spike antwortet …" : "Nachricht an spike …";
   const sp = $("#speed");
   if (run && S.live.speed > 0) sp.textContent = `${String(S.live.speed).replace(".", ",")} t/s`;
   else if (S.st) sp.textContent = S.st.error ? "⚠ Server" : `${Math.round(S.st.n_ctx / 1000)}k Kontext`;
   sp.title = S.st && S.st.error || "";
 }
+chatEl.addEventListener("change", e => {
+  if (!e.target.matches("[data-askcb]")) return;
+  const ok = chatEl.querySelector("[data-askok]");
+  if (ok) ok.disabled = !chatEl.querySelector("[data-askcb]:checked");
+});
 chatEl.addEventListener("click", e => {
   const c = e.target.closest("[data-copy]");
   if (c) return copyText(c.closest(".pre").querySelector("pre").textContent);
   const ans = e.target.closest("[data-ans]");
   if (ans) return answer(ans.dataset.ans);
+  const p = S.live.pending, opts = (p && p.options) || [];
+  const ask = e.target.closest("[data-ask]");
+  if (ask) return answerAsk([opts[+ask.dataset.ask]]);
+  if (e.target.closest("[data-askok]"))
+    return answerAsk([...chatEl.querySelectorAll("[data-askcb]:checked")].map(cb => opts[+cb.dataset.askcb]));
   const act = e.target.closest("[data-act]");
   if (act) {
     const b = S.blocks[S.blocks.map(x => x.t).lastIndexOf("ai")];
@@ -332,7 +355,7 @@ async function send(textArg) {
   const inp = $("#input");
   const text = (textArg ?? inp.value).trim();
   if (S.live.running && S.live.pending) {           // Text während einer Freigabe = „Nein, stattdessen …“
-    if (text) { inp.value = ""; grow(); answer("no", text); }
+    if (text) { inp.value = ""; grow(); S.live.pending.kind === "ask" ? answerAsk([], text) : answer("no", text); }
     return;
   }
   if ((!text && !S.atts.length) || S.live.running || S.sending) return;
@@ -349,6 +372,12 @@ async function send(textArg) {
     S.live = {running: false, error: e.message}; S.blocks.pop(); render();
     inp.value = text; grow();
   } finally { S.sending = false; }
+}
+async function answerAsk(choices, text = "") {
+  if (!S.cur) return;
+  S.live.pending = null; renderLive();
+  try { await api(`/api/chat/${encodeURIComponent(S.cur)}/answer`, {json: {choices, reason: text}}); }
+  catch (e) { toast("Antwort fehlgeschlagen", e.message); }
 }
 async function answer(choice, reason = "") {
   if (!S.cur) return;

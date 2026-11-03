@@ -8,7 +8,7 @@ import time
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QRadialGradient
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
+    QApplication, QCheckBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -528,6 +528,82 @@ def confirm_card(pending, c, on_choice):
     return card
 
 
+def ask_card(pending, c, on_answer):
+    """Rückfrage des Modells (ask_user): eine Möglichkeit anklicken oder mehrere ankreuzen – oder frei antworten."""
+    card = QFrame()
+    card.setObjectName("Confirm")
+    card.setStyleSheet(f"QFrame#Confirm {{ background: {c['panel']}; border: 1px solid {c['accent']};"
+                       f"border-radius: 14px; }}")
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(14, 10, 14, 12)
+    lay.setSpacing(8)
+    head = QLabel(f"❓ <b>{html.escape(pending.get('question') or 'Frage')}</b>")
+    head.setTextFormat(Qt.RichText)
+    head.setWordWrap(True)
+    lay.addWidget(head)
+    opts, multi = pending.get("options") or [], bool(pending.get("multi"))
+    first = None
+    if multi:
+        boxes = []
+        for i, o in enumerate(opts):
+            cb = QCheckBox(o.replace("&", "&&"))
+            cb.setCursor(Qt.PointingHandCursor)
+            if i < 9:
+                cb.setToolTip(f"Alt+{i + 1}")
+                cb.setShortcut(f"Alt+{i + 1}")
+            lay.addWidget(cb)
+            boxes.append(cb)
+            first = first or cb
+        row = QHBoxLayout()
+        ok = QPushButton("✓ &Übernehmen")
+        ok.setObjectName("Primary")
+        ok.setCursor(Qt.PointingHandCursor)
+        ok.setEnabled(False)
+        for cb in boxes:
+            cb.toggled.connect(lambda _=None: ok.setEnabled(any(b.isChecked() for b in boxes)))
+        ok.clicked.connect(lambda: on_answer([o for o, b in zip(opts, boxes) if b.isChecked()]))
+        row.addWidget(ok)
+        row.addStretch(1)
+        lay.addLayout(row)
+    else:
+        for i, o in enumerate(opts):
+            b = QPushButton(f"&{i + 1}  {o.replace('&', '&&')}" if i < 9 else o.replace("&", "&&"))
+            b.setObjectName("Primary" if i == 0 else "")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet("text-align: left; padding: 7px 12px;")
+            b.clicked.connect(lambda _=False, o=o: on_answer([o]))
+            lay.addWidget(b)
+            first = first or b
+    hint = QLabel(("Ankreuzen und übernehmen" if multi else "Eine Möglichkeit anklicken (Alt+Zahl)")
+                  + " – oder unten eine eigene Antwort schreiben (Enter).")
+    hint.setObjectName("Muted")
+    hint.setStyleSheet("font-size: 8.5pt;")
+    hint.setWordWrap(True)
+    lay.addWidget(hint)
+    shadow(card, c, blur=18, dy=3, strength=0.7)
+    if first:
+        QTimer.singleShot(0, first.setFocus)
+    return card
+
+
+def ask_chip(call, result, c):
+    """Erledigte Rückfrage im Verlauf: Frage und Antwort des Nutzers."""
+    try:
+        q = json.loads(call["function"]["arguments"] or "{}").get("question", "")
+    except Exception:
+        q = ""
+    ans = (result or "").replace("Der Nutzer hat gewählt: ", "").replace("Der Nutzer antwortet: ", "")
+    line = (f'❓ <b>{html.escape(q or "Rückfrage")}</b><br>'
+            f'<span style="color:{c["muted"]}">↳ {html.escape(ans[:300])}</span>')
+    chip = QFrame()
+    chip.setObjectName("Chip")
+    lay = QVBoxLayout(chip)
+    lay.setContentsMargins(12, 8, 12, 8)
+    lay.addWidget(_label(line, obj="ChipText"))
+    shadow(chip, c, blur=14, dy=2, strength=0.6)
+    return chip
+
+
 def reasoning_label(text, tail=False):
     t = text.strip()
     t = ("… " + t[-400:]) if tail and len(t) > 400 else (t[:300] + " …" if len(t) > 300 else t)
@@ -608,6 +684,7 @@ class ChatView(QScrollArea):
         self.live_widgets = {}  # "rs"/"ct" -> LiveText (bleibt während des Streamens bestehen)
         self.term_widgets = {}  # ("t", tool_id) / ("u", index) -> TermCard
         self.on_confirm = None  # fn("yes"|"always"|"no")
+        self.on_ask = None      # fn([gewählte Möglichkeiten]) – Antwort auf eine ask_user-Rückfrage
         self.on_speak = None    # fn(text) – 🔊 unter der letzten Antwort
         self.on_undo = None     # fn(tool_call_id) – ↶ an einer Diff-Karte
         self._stick = True
@@ -672,6 +749,11 @@ class ChatView(QScrollArea):
                     specs.append((("a", i, hash(t), theme), lambda t=t: content_widget(t, c)))
                 for tc in m.get("tool_calls") or []:
                     res = results.get(tc["id"])
+                    if tc["function"]["name"] == "ask_user":
+                        if res is not None:      # offene Frage zeigt die Karte unten
+                            specs.append((("ask", tc["id"], hash(res), theme),
+                                          lambda tc=tc, res=res: ask_chip(tc, res, c)))
+                        continue
                     if tc["function"]["name"] == "run_shell" and not (res or "").startswith("Vom Nutzer abgelehnt"):
                         try:
                             cmd = json.loads(tc["function"]["arguments"] or "{}").get("command", "")
@@ -718,7 +800,10 @@ class ChatView(QScrollArea):
                 specs.append((("lc", theme), lambda: self._make_live("ct", c)))
             if not rs and not ct and not pending and not tool_live:
                 specs.append((("dots", theme), lambda: TypingDots(c)))
-        if pending:
+        if pending and pending.get("kind") == "ask":
+            specs.append((("askcard", id(pending), theme),
+                          lambda: ask_card(pending, c, lambda ch: self.on_ask and self.on_ask(ch))))
+        elif pending:
             specs.append((("confirm", id(pending), theme),
                           lambda: confirm_card(pending, c, lambda ch: self.on_confirm and self.on_confirm(ch))))
         return specs

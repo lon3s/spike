@@ -1212,6 +1212,8 @@ Bearbeiten unter ⚙ Einstellungen → Profile.</li>
 <ul>
 <li>Bei heiklen Aktionen (Shell, Dateien ändern …) erscheint eine <b>Freigabe-Karte</b>:
 <b>Ja</b>, <b>Immer</b> (für diesen Chat) oder <b>Nein</b>. Bei „Nein“ kannst du ins Eingabefeld schreiben, was sie stattdessen tun soll.</li>
+<li>Braucht spike eine Entscheidung, stellt es eine <b>Rückfrage mit Auswahl</b> ❓: eine Möglichkeit anklicken
+(oder Alt+Zahl), bei mehreren ankreuzen und <b>Übernehmen</b> – oder einfach unten frei antworten.</li>
 <li>Dateiänderungen zeigen einen Diff – <b>↶</b> daran oder <code>/undo</code> macht sie rückgängig.</li>
 </ul>
 
@@ -1418,6 +1420,7 @@ class MainWindow(QMainWindow):
         # --- Chat + Eingabe ---
         self.view = ChatView()
         self.view.on_confirm = self._confirm_choice
+        self.view.on_ask = self._ask_choice
         self.view.on_speak = self.speak
         self.view.on_undo = self.undo_change
         self.input = InputBox()
@@ -2418,7 +2421,10 @@ class MainWindow(QMainWindow):
     def send(self):
         text = self.input.toPlainText().strip()
         if self.agent and self.agent.pending:
-            if text:      # Text während einer Freigabe = „Nein, mach stattdessen …“
+            if text and self.agent.pending.get("kind") == "ask":     # eigene Antwort auf eine Rückfrage
+                self.input.clear()
+                self._ask_choice([], text)
+            elif text:    # Text während einer Freigabe = „Nein, mach stattdessen …“
                 self.input.clear()
                 self.agent.answer(False, reason=text)
             return
@@ -2482,13 +2488,20 @@ class MainWindow(QMainWindow):
     def _confirm(self, text):
         """Freigabe erscheint als Karte im Chat (ChatView) – hier nur nach vorn holen und Hinweis zeigen."""
         self.redraw(force_bottom=True)
-        self._info("🔐 Wartet auf deine Freigabe")
+        ask = bool(self.agent and self.agent.pending and self.agent.pending.get("kind") == "ask")
+        self._info("❓ Wartet auf deine Antwort" if ask else "🔐 Wartet auf deine Freigabe")
         if self.isVisible() and not self.isActiveWindow():
             self.raise_()
             self.activateWindow()
 
+    def _ask_choice(self, choices, text=""):
+        if self.agent and self.agent.pending and self.agent.pending.get("kind") == "ask":
+            self.agent.answer_ask(choices, text)
+            self._info("")
+            self.input.setFocus()
+
     def _confirm_choice(self, choice):
-        if self.agent and self.agent.pending:
+        if self.agent and self.agent.pending and self.agent.pending.get("kind") != "ask":
             self.agent.answer(choice != "no", remember=(choice == "always"))
             self._info("")
             self.input.setFocus()

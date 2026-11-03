@@ -101,6 +101,14 @@ TOOL_SPECS = {
                          {"query": {"type": "string"}}),
     "memory_delete": _fn("memory_delete", "Löscht einen Gedächtnis-Eintrag per id (z. B. wenn er falsch ist).",
                          {"id": {"type": "string"}}, ["id"]),
+    "ask_user": _fn("ask_user", "Stellt dem Nutzer eine Frage mit Antwort-Knöpfen und wartet auf seine Wahl. Nur nutzen, "
+                    "wenn du wirklich eine Entscheidung brauchst (mehrere sinnvolle Wege, fehlende Angabe), nicht für "
+                    "Rückfragen, die du selbst klären kannst. Der Nutzer kann auch frei antworten.",
+                    {"question": {"type": "string", "description": "kurze, klare Frage"},
+                     "options": {"type": "array", "items": {"type": "string"},
+                                 "description": "2–6 kurze Antwortmöglichkeiten"},
+                     "multi": {"type": "boolean", "description": "true = mehrere ankreuzbar, Standard false"}},
+                    ["question", "options"]),
 }
 
 MEMORY_TOOLS = ["memory_save", "memory_search", "memory_delete"]
@@ -115,6 +123,7 @@ TOOL_LABELS = {
     "schedule_delete": "Geplantes löschen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
+    "ask_user": "Rückfrage mit Auswahl",
 }
 
 
@@ -421,6 +430,7 @@ class ToolBox:
         self.last_undo = None         # Sicherung der letzten Dateiänderung (für Rückgängig)
         self.vision = False           # versteht das Modell Bilder?
         self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
+        self._proc = None             # laufender Shell-Prozess (für Stopp)
 
     def _mcp_image(self, b64, mime):
         import base64
@@ -444,7 +454,6 @@ class ToolBox:
         att = attachments.screenshot(active_window=bool(window))
         self._images.append(att)
         return "Screenshot aufgenommen – das Bild folgt als nächste Nachricht."
-        self._proc = None
 
     # --- Shell mit Live-Ausgabe ---
     _CWD_MARK = "\x1eSPIKE_CWD:"
@@ -902,6 +911,10 @@ class ToolBox:
 
     def t_memory_delete(self, id, confirm=None):
         return "Gelöscht." if memory.delete(id) else f"Kein Eintrag mit id {id}."
+
+    # --- Rückfrage (die eigentliche Karte zeigt der Agent, siehe Agent._ask) ---
+    def t_ask_user(self, question, options=None, multi=False, confirm=None):
+        return "Fehler: Rückfragen gehen nur im Chat."
 
 
 def expand(names):

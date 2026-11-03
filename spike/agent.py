@@ -1,5 +1,6 @@
 """Agenten-Schleife: Modell aufrufen → Werkzeuge ausführen → wiederholen. Läuft im Hintergrund-Thread."""
 import json
+import re
 import threading
 import time
 
@@ -29,6 +30,12 @@ MEMORY_HOWTO = (
     "memory_search. Erwähne das Gedächtnis nur, wenn es passt."
 )
 
+ASK_HOWTO = (
+    "Gibt es mehrere sinnvolle Wege oder fehlt eine Angabe, frag VOR dem Handeln mit ask_user und gib 2–6 kurze "
+    "Möglichkeiten vor (multi=true, wenn mehrere zusammen passen; das steht dann schon auf der Karte). Frag nur, "
+    "wenn es wirklich nötig ist – Einfaches entscheidest du selbst."
+)
+
 
 class Agent(QObject):
     changed = Signal()
@@ -56,6 +63,7 @@ class Agent(QObject):
         self.auto_deny = False    # geplante Aufgaben: niemand da zum Bestätigen → automatisch ablehnen
         self._remember = False
         self._reason = ""
+        self._ask_reply = None    # Antwort auf eine Rückfrage: {"choices": [...], "text": "..."}
 
     # --- Steuerung ---
     def start(self):
@@ -97,6 +105,46 @@ class Agent(QObject):
     def answer(self, ok: bool, remember=False, reason=""):
         self._answer, self._remember, self._reason = ok, remember, reason
         self._ev.set()
+
+    def answer_ask(self, choices=None, text=""):
+        """Antwort auf eine ask_user-Rückfrage: gewählte Möglichkeiten und/oder eigener Text."""
+        self._ask_reply = {"choices": [str(c) for c in (choices or [])], "text": str(text or "").strip()}
+        self._ev.set()
+
+    def _ask(self, args) -> str:
+        q = " ".join(str(args.get("question") or "").split())[:500]
+        opts = args.get("options") or []
+        if isinstance(opts, str):          # manche Modelle schicken eine Liste als Text
+            try:
+                opts = json.loads(opts)
+            except ValueError:
+                opts = [o for o in re.split(r"[\n;|]", opts)]
+        opts = [" ".join(str(o).split())[:120] for o in opts if str(o).strip()][:8]
+        if not q:
+            return "Fehler: question fehlt."
+        if self.auto_deny:
+            return ("Der Nutzer ist nicht da (geplante Aufgabe) und kann nicht antworten. Entscheide selbst "
+                    "oder nenne die offenen Möglichkeiten im Ergebnis.")
+        if self.stopped:
+            return "Abgebrochen."
+        self.pending = {"kind": "ask", "question": q, "options": opts, "multi": bool(args.get("multi")),
+                        "text": q}
+        self._ask_reply = None
+        self._ev.clear()
+        self._tick(force=True)
+        self.confirm_request.emit(q)
+        self._ev.wait()
+        self.pending = None
+        self._tick(force=True)
+        r = self._ask_reply
+        if self.stopped or not r:
+            return "Abgebrochen – der Nutzer hat nicht geantwortet."
+        parts = []
+        if r["choices"]:
+            parts.append("Der Nutzer hat gewählt: " + "; ".join(r["choices"]))
+        if r["text"]:
+            parts.append(("Er schreibt dazu: " if r["choices"] else "Der Nutzer antwortet: ") + r["text"])
+        return "\n".join(parts) or "Der Nutzer hat nichts gewählt."
 
     # Was „Immer erlauben“ freischaltet: bei Shell-Befehlen nur dasselbe Programm, sonst das Werkzeug
     def _allow_key(self):
@@ -153,6 +201,9 @@ class Agent(QObject):
     def _system_prompt(self):
         system = (self.profile.get("system_prompt") or "").replace("{date}", time.strftime("%d.%m.%Y"))
         s = self.settings
+        tools = expand(self.profile.get("tools", []))
+        if "ask_user" in tools:
+            system = (system + "\n\n" + ASK_HOWTO).strip()
         if not s.get("memory_enabled", True):
             return system
         # Auszug einmal pro Chat bilden und dann gleich lassen (Prompt-Cache des Servers bleibt gültig)
@@ -163,7 +214,7 @@ class Agent(QObject):
             mem = {"text": text, "n": n, "total": total}
             if first is not None:     # erst festschreiben, wenn die erste Nachricht da ist
                 self.chat["memory"] = mem
-        has_tools = any(t in expand(self.profile.get("tools", [])) for t in MEMORY_TOOLS)
+        has_tools = any(t in tools for t in MEMORY_TOOLS)
         block = ""
         if mem.get("text"):
             more = " – weitere mit memory_search" if has_tools and mem["total"] > mem["n"] else ""
@@ -345,7 +396,8 @@ class Agent(QObject):
                             self._tick()
                         self.toolbox.on_output = on_out
                         try:
-                            result = self.toolbox.run(name, args, self._confirm)
+                            result = (self._ask(args) if name == "ask_user"
+                                      else self.toolbox.run(name, args, self._confirm))
                         finally:
                             self.toolbox.on_output = None
                             self.live_tool = None

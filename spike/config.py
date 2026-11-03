@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
         {
             "name": "Allgemein",
             "system_prompt": "Du bist ein hilfreicher Assistent. Antworte knapp und auf Deutsch. Heute ist {date}.",
-            "tools": ["web_search", "fetch_url"],
+            "tools": ["web_search", "fetch_url", "ask_user"],
             "temperature": 0.7,
             "max_tokens": 0,
         },
@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
                 "und fetch_url oder den Browser, um sie zu lesen. Nenne am Ende die Quellen-URLs. "
                 "Rufe nur so viele Seiten ab wie nötig."
             ),
-            "tools": ["web_search", "fetch_url"] + BROWSER_TOOLS,
+            "tools": ["web_search", "fetch_url", "ask_user"] + BROWSER_TOOLS,
             "temperature": 0.4,
             "max_tokens": 0,
         },
@@ -59,7 +59,7 @@ DEFAULT_CONFIG = {
                 "als [Nummer]; benutze diese Nummern für browser_click und browser_type. "
                 "Arbeite Schritt für Schritt und fasse am Ende das Ergebnis zusammen."
             ),
-            "tools": BROWSER_TOOLS + ["web_search"],
+            "tools": BROWSER_TOOLS + ["web_search", "ask_user"],
             "temperature": 0.3,
             "max_tokens": 0,
         },
@@ -70,7 +70,7 @@ DEFAULT_CONFIG = {
                 "Du kannst Shell-Befehle ausführen und Dateien lesen/schreiben; der Nutzer bestätigt jede "
                 "Aktion. Erkläre kurz, was du vorhast, bevor du etwas veränderst."
             ),
-            "tools": ["run_shell", "read_file", "list_dir", "write_file"],
+            "tools": ["run_shell", "read_file", "list_dir", "write_file", "ask_user"],
             "temperature": 0.2,
             "max_tokens": 0,
         },
@@ -149,6 +149,13 @@ def _migrate(cfg) -> bool:
         if not any(p.get("name") == ALL_PROFILE["name"] for p in cfg["profiles"]):
             cfg["profiles"].insert(0, copy.deepcopy(ALL_PROFILE))
         done.add("profile_alles")
+        changed = True
+    if "ask_user" not in done:    # Rückfrage-Werkzeug für alle Profile, die schon Werkzeuge haben
+        for p in cfg["profiles"]:
+            t = p.get("tools")
+            if isinstance(t, list) and t and "*" not in t and "ask_user" not in t:
+                t.append("ask_user")
+        done.add("ask_user")
         changed = True
     if changed:
         cfg["settings"]["migrations"] = sorted(done)
