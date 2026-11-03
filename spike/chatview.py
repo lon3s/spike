@@ -6,7 +6,7 @@ import re
 import time
 
 from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QRadialGradient
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QKeySequence, QPainter, QRadialGradient, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -528,61 +528,134 @@ def confirm_card(pending, c, on_choice):
     return card
 
 
+class _AskOption(QFrame):
+    """Eine Antwortmöglichkeit: wie ein Knopf bzw. ein Häkchen, aber mit Zeilenumbruch (QPushButton/QCheckBox
+    brechen nie um und machen die Karte sonst breiter als das Fenster)."""
+
+    def __init__(self, num, text, c, check=False, primary=False, on_click=None):
+        super().__init__()
+        self.c, self.check, self.primary, self.on_click = c, check, primary, on_click
+        self.checked = False
+        self.setObjectName("AskOpt")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 7, 12, 7)
+        lay.setSpacing(9)
+        self.box = None
+        if check:
+            self.box = QCheckBox()
+            self.box.setFocusPolicy(Qt.NoFocus)
+            self.box.setAttribute(Qt.WA_TransparentForMouseEvents)
+            lay.addWidget(self.box, 0, Qt.AlignTop)
+        num_html = f'<span style="color:{c["muted"] if not primary else c["accent_text"]}">{num}</span>&nbsp; ' if num else ""
+        self.lb = QLabel(num_html + html.escape(text))
+        self.lb.setTextFormat(Qt.RichText)
+        self.lb.setWordWrap(True)
+        self.lb.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.lb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)   # Breite kommt von der Karte, nie vom Text
+        lay.addWidget(self.lb, 1)
+        self._style(False)
+
+    def _style(self, hover):
+        c = self.c
+        if self.primary:
+            bg, fg, bd = (c["accent_hover"] if hover else c["accent"]), c["accent_text"], "transparent"
+        else:
+            bg, fg = c["panel2"], c["text"]
+            bd = c["accent"] if (hover or self.hasFocus() or self.checked) else c["border"]
+        self.setStyleSheet(f"QFrame#AskOpt {{ background: {bg}; border: 1px solid {bd}; border-radius: 10px; }}"
+                           f"QFrame#AskOpt QLabel {{ color: {fg}; background: transparent; border: none;"
+                           f"{' font-weight: 600;' if self.primary else ''} }}")
+
+    def activate(self):
+        if self.check:
+            self.checked = not self.checked
+            self.box.setChecked(self.checked)
+            self._style(True)
+        if self.on_click:
+            self.on_click()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.activate()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self.activate()
+        else:
+            super().keyPressEvent(e)
+
+    def enterEvent(self, e):
+        self._style(True)
+
+    def leaveEvent(self, e):
+        self._style(False)
+
+    def focusInEvent(self, e):
+        self._style(False)
+        super().focusInEvent(e)
+
+    def focusOutEvent(self, e):
+        self._style(False)
+        super().focusOutEvent(e)
+
+
 def ask_card(pending, c, on_answer):
     """Rückfrage des Modells (ask_user): eine Möglichkeit anklicken oder mehrere ankreuzen – oder frei antworten."""
     card = QFrame()
     card.setObjectName("Confirm")
     card.setStyleSheet(f"QFrame#Confirm {{ background: {c['panel']}; border: 1px solid {c['accent']};"
                        f"border-radius: 14px; }}")
+    card.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     lay = QVBoxLayout(card)
     lay.setContentsMargins(14, 10, 14, 12)
     lay.setSpacing(8)
     head = QLabel(f"❓ <b>{html.escape(pending.get('question') or 'Frage')}</b>")
     head.setTextFormat(Qt.RichText)
     head.setWordWrap(True)
+    head.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     lay.addWidget(head)
     opts, multi = pending.get("options") or [], bool(pending.get("multi"))
-    first = None
+    items = []
     if multi:
-        boxes = []
-        for i, o in enumerate(opts):
-            cb = QCheckBox(o.replace("&", "&&"))
-            cb.setCursor(Qt.PointingHandCursor)
-            if i < 9:
-                cb.setToolTip(f"Alt+{i + 1}")
-                cb.setShortcut(f"Alt+{i + 1}")
-            lay.addWidget(cb)
-            boxes.append(cb)
-            first = first or cb
-        row = QHBoxLayout()
-        ok = QPushButton("✓ &Übernehmen")
+        ok = QPushButton("✓ Übernehmen")
         ok.setObjectName("Primary")
         ok.setCursor(Qt.PointingHandCursor)
         ok.setEnabled(False)
-        for cb in boxes:
-            cb.toggled.connect(lambda _=None: ok.setEnabled(any(b.isChecked() for b in boxes)))
-        ok.clicked.connect(lambda: on_answer([o for o, b in zip(opts, boxes) if b.isChecked()]))
+
+        def refresh():
+            ok.setEnabled(any(it.checked for it in items))
+        for i, o in enumerate(opts):
+            it = _AskOption("", o, c, check=True, on_click=refresh)
+            items.append(it)
+            lay.addWidget(it)
+        ok.clicked.connect(lambda: on_answer([o for o, it in zip(opts, items) if it.checked]))
+        row = QHBoxLayout()
         row.addWidget(ok)
         row.addStretch(1)
         lay.addLayout(row)
     else:
         for i, o in enumerate(opts):
-            b = QPushButton(f"&{i + 1}  {o.replace('&', '&&')}" if i < 9 else o.replace("&", "&&"))
-            b.setObjectName("Primary" if i == 0 else "")
-            b.setCursor(Qt.PointingHandCursor)
-            b.setStyleSheet("text-align: left; padding: 7px 12px;")
-            b.clicked.connect(lambda _=False, o=o: on_answer([o]))
-            lay.addWidget(b)
-            first = first or b
-    hint = QLabel(("Ankreuzen und übernehmen" if multi else "Eine Möglichkeit anklicken (Alt+Zahl)")
-                  + " – oder unten eine eigene Antwort schreiben (Enter).")
+            it = _AskOption(str(i + 1) if i < 9 else "", o, c, primary=(i == 0),
+                            on_click=lambda o=o: on_answer([o]))
+            items.append(it)
+            lay.addWidget(it)
+    for i, it in enumerate(items[:9]):          # Alt+1 … Alt+9
+        sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), card)
+        sc.activated.connect(it.activate)
+    if multi:
+        QShortcut(QKeySequence("Alt+Return"), card).activated.connect(lambda: ok.isEnabled() and ok.click())
+    hint = QLabel(("Ankreuzen (Alt+Zahl) und übernehmen (Alt+Enter)" if multi
+                   else "Eine Möglichkeit anklicken (Alt+Zahl)") + " – oder unten eine eigene Antwort schreiben (Enter).")
     hint.setObjectName("Muted")
     hint.setStyleSheet("font-size: 8.5pt;")
     hint.setWordWrap(True)
+    hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     lay.addWidget(hint)
     shadow(card, c, blur=18, dy=3, strength=0.7)
-    if first:
-        QTimer.singleShot(0, first.setFocus)
+    if items:
+        QTimer.singleShot(0, items[0].setFocus)
     return card
 
 
