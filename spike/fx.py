@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPixm
 from PySide6.QtWidgets import QWidget
 
 FX = [("auto", "Vom Design (z. B. Matrix → Röhrenmonitor)"), ("aus", "Aus"), ("crt", "Röhrenmonitor (immer)"),
-      ("crt_text", "Röhrenmonitor + flackernder Text")]
+      ("crt_text", "Röhrenmonitor + zitternder Text")]
 
 
 def wanted(settings, colors) -> str:
@@ -40,7 +40,7 @@ class CRTOverlay(QWidget):
         self._last_band = QRect()
         self._flicker_until = 0.0
         self._next_flicker = time.monotonic() + random.uniform(4, 9)
-        self.text_flicker = None      # TextFlicker-Ebene: beim Flackern flackert auch der Inhalt
+        self.text_flicker = None      # TextFlicker-Ebene: beim Flackern zittert auch der Inhalt
         self.timer = QTimer(self)
         self.timer.setInterval(int(1000 / self.FPS))
         self.timer.timeout.connect(self._frame)
@@ -156,10 +156,10 @@ class CRTOverlay(QWidget):
 
 
 class TextFlicker(QWidget):
-    """Liegt nur während eines Flackerns kurz über dem Fenster: zeigt ein Abbild des Inhalts, das dunkler/heller
-    wird, und verschiebt ein paar Bildzeilen seitlich – so flackern auch die Buchstaben. Sonst ausgeblendet."""
-    # (Abdunkeln 0–255, Aufhellen 0–255, verrutschte Zeilen ja/nein) pro Bild à 30 ms
-    SEQ = [(110, 0, True), (20, 26, False), (70, 0, True), (0, 14, False), (40, 0, False)]
+    """Liegt nur während eines Flackerns kurz über dem Fenster und zeigt ein Abbild des Inhalts, das um 1–2 px
+    hin- und herzittert – die Buchstaben vibrieren kurz. Keine Helligkeitsänderung. Sonst ausgeblendet."""
+    # Versatz (dx, dy) pro Bild à 30 ms – ein kurzes, unruhiges Zittern, das wieder zur Ruhe kommt
+    SEQ = [(2, 0), (-1, 1), (1, -1), (-2, 0), (1, 1), (-1, 0), (1, 0), (0, 0)]
 
     def __init__(self, host, radius=0):
         super().__init__(host)
@@ -168,7 +168,6 @@ class TextFlicker(QWidget):
         self.setFocusPolicy(Qt.NoFocus)
         self.snap = None
         self.step = 0
-        self.bands = []
         self.timer = QTimer(self)
         self.timer.setInterval(30)
         self.timer.timeout.connect(self._next)
@@ -178,11 +177,6 @@ class TextFlicker(QWidget):
         if self.isVisible() or not self.host.isVisible():
             return
         self.snap = self.host.grab()                 # Abbild ohne diese Ebene (sie ist gerade unsichtbar)
-        h = max(1, self.host.height())
-        self.bands = []
-        for _ in range(random.randint(2, 4)):        # ein paar Zeilenstreifen, die seitlich verrutschen
-            y = random.randint(0, h - 10)
-            self.bands.append((y, random.randint(4, 26), random.choice((-1, 1)) * random.randint(2, 7)))
         self.step = 0
         self.setGeometry(self.host.rect())
         self.show()
@@ -201,20 +195,12 @@ class TextFlicker(QWidget):
     def paintEvent(self, e):
         if self.snap is None:
             return
-        dim, light, shift = self.SEQ[min(self.step, len(self.SEQ) - 1)]
+        dx, dy = self.SEQ[min(self.step, len(self.SEQ) - 1)]
         p = QPainter(self)
         if self.radius:
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
             p.setClipPath(path)
-        dpr = self.snap.devicePixelRatio() or 1
-        p.drawPixmap(0, 0, self.snap)
-        if shift:
-            for y, hh, dx in self.bands:
-                src = QRect(0, int(y * dpr), self.snap.width(), int(hh * dpr))
-                p.drawPixmap(QRect(dx, y, self.width(), hh), self.snap, src)
-        if dim:
-            p.fillRect(self.rect(), QColor(0, 0, 0, dim))
-        if light:
-            p.fillRect(self.rect(), QColor(255, 255, 255, light))
+        p.drawPixmap(0, 0, self.snap)                # ruhiges Bild darunter füllt die Ränder beim Verschieben
+        p.drawPixmap(dx, dy, self.snap)
         p.end()
