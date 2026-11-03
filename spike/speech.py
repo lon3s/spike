@@ -80,16 +80,34 @@ _worker_key = None
 _wlock = threading.Lock()
 
 
+_py_cache = {"value": None, "time": 0.0}
+_py_lock = threading.Lock()
+
+
 def _find_python(settings):
+    """Python mit faster-whisper. Die Suche startet Python-Prozesse (~1 s pro Kandidat), darum wird das
+    Ergebnis gemerkt: gefunden für immer, nicht gefunden für 60 s (falls gerade installiert wird)."""
     p = (settings.get("stt_python") or "").strip()
     if p:
         return p
-    for cand in DEFAULT_PYTHONS:
-        if cand.exists():
-            r = subprocess.run([str(cand), "-c", "import faster_whisper"], capture_output=True)
-            if r.returncode == 0:
-                return str(cand)
-    return ""
+    with _py_lock:
+        v, t = _py_cache["value"], _py_cache["time"]
+        if v or (v == "" and time.monotonic() - t < 60):
+            return v
+        found = ""
+        for cand in DEFAULT_PYTHONS:
+            if cand.exists():
+                r = subprocess.run([str(cand), "-c", "import faster_whisper"], capture_output=True)
+                if r.returncode == 0:
+                    found = str(cand)
+                    break
+        _py_cache.update(value=found, time=time.monotonic())
+        return found
+
+
+def warm_up(settings):
+    """Beim Start im Hintergrund suchen, damit Einstellungen/Handy-Seite nicht warten müssen."""
+    threading.Thread(target=_find_python, args=(dict(settings),), daemon=True).start()
 
 
 def _find_model(settings):

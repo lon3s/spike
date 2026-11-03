@@ -59,6 +59,8 @@ class Controller:
         self.app, self._MainWindow = app, MainWindow
         self.browser = Browser()
         load_plugins()
+        from . import config as _C, speech as _speech
+        _speech.warm_up(_C.load_config()["settings"])   # faster-whisper-Suche (~1 s) vorab im Hintergrund
         self.main = None
         self.popup = None
         self.layer = False

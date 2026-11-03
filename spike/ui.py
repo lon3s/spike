@@ -297,6 +297,7 @@ class SettingsDialog(QDialog):
         self.resize(960, 620)
         self.cfg = copy.deepcopy(cfg)
         tabs = QTabWidget()
+        pages = []                  # (Seite, Titel) – am Ende alphabetisch sortiert
 
         # Endpunkte
         def ep_form(w, changed):
@@ -322,7 +323,7 @@ class SettingsDialog(QDialog):
             self.cfg["endpoints"],
             lambda: {"name": f"PC{len(self.cfg['endpoints']) + 1}", "url": "http://", "api_key": "", "model": ""},
             ep_form)
-        tabs.addTab(self.ep_editor, "Endpunkte / APIs")
+        pages.append((self.ep_editor, "Endpunkte / APIs"))
 
         # Profile
         def pr_form(w, changed):
@@ -395,7 +396,7 @@ class SettingsDialog(QDialog):
             self.cfg["profiles"],
             lambda: {"name": "Neues Profil", "system_prompt": "", "tools": [], "temperature": 0.7, "max_tokens": 0},
             pr_form)
-        tabs.addTab(self.pr_editor, "Profile / System-Prompts")
+        pages.append((self.pr_editor, "Profile / System-Prompts"))
 
         # Allgemein
         gen = QWidget()
@@ -449,15 +450,17 @@ class SettingsDialog(QDialog):
         self.plugin_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         f.addRow(self.plugin_label)
         self._show_plugins()
-        tabs.addTab(gen, "Allgemein")
-        tabs.addTab(self._memory_tab(s), "Gedächtnis && Kontext")
-        tabs.addTab(self._mcp_tab(s), "MCP-Server")
-        tabs.addTab(self._speech_tab(s), "Sprache")
-        tabs.addTab(self._glow_tab(s), "Popup")
+        pages.append((gen, "Allgemein"))
+        pages.append((self._memory_tab(s), "Gedächtnis && Kontext"))
+        pages.append((self._mcp_tab(s), "MCP-Server"))
+        pages.append((self._speech_tab(s), "Sprache"))
+        pages.append((self._glow_tab(s), "Popup"))
         from .phone_ui import PhoneTab
         ctrl = getattr(parent, "ctrl", None)
         self.phone = PhoneTab(s, getattr(ctrl, "web", None))
-        tabs.addTab(self.phone, "Handy")
+        pages.append((self.phone, "Handy"))
+        for page, title in sorted(pages, key=lambda pt: pt[1].replace("&&", "&").casefold()):
+            tabs.addTab(page, title)
         if isinstance(tab, str):
             for i in range(tabs.count()):
                 if tabs.tabText(i) == tab:
