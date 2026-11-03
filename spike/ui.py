@@ -267,7 +267,7 @@ class PiperDownloadDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, cfg, parent=None):
+    def __init__(self, cfg, parent=None, tab=None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
         self.resize(960, 620)
@@ -417,6 +417,14 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._mcp_tab(s), "MCP-Server")
         tabs.addTab(self._speech_tab(s), "Sprache")
         tabs.addTab(self._glow_tab(s), "Popup")
+        from .phone_ui import PhoneTab
+        ctrl = getattr(parent, "ctrl", None)
+        self.phone = PhoneTab(s, getattr(ctrl, "web", None))
+        tabs.addTab(self.phone, "Handy")
+        if isinstance(tab, str):
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == tab:
+                    tabs.setCurrentIndex(i)
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
@@ -882,7 +890,7 @@ class SettingsDialog(QDialog):
                  memory_enabled=self.cb_mem.isChecked(), memory_prompt_chars=self.sp_mem.value(),
                  auto_compact=self.cb_compact.isChecked(), compact_at_percent=self.sp_cat.value(),
                  compact_keep_percent=self.sp_ckeep.value(), python_timeout=self.sp_pyto.value(),
-                 **{k: get() for k, get in self.sp_fields.items()})
+                 **{k: get() for k, get in self.sp_fields.items()}, **self.phone.values())
         return self.cfg
 
 
@@ -2428,6 +2436,9 @@ class MainWindow(QMainWindow):
             return
         if (not text and not self.attachments) or self.agent or self.chat is None:
             return
+        if self.ctrl and getattr(self.ctrl, "web", None) and self.chat["id"] in self.ctrl.web.runs:
+            self._info("📱 Dieser Chat antwortet gerade auf dem Handy – bitte kurz warten")
+            return
         ep = self.endpoint()
         if not ep:
             QMessageBox.warning(self, "Kein Server", "Bitte zuerst unter ⚙ Einstellungen einen Endpunkt anlegen.")
@@ -2928,8 +2939,8 @@ class MainWindow(QMainWindow):
                          self.agent.pending if self.agent else None, self.agent.live_tool if self.agent else None)
 
     # --- Einstellungen ---
-    def open_settings(self):
-        dlg = SettingsDialog(self.cfg, self)
+    def open_settings(self, tab=None):
+        dlg = SettingsDialog(self.cfg, self, tab)
         if dlg.exec():
             new = dlg.result_config()
             mcp_changed = new["settings"].get("mcp_servers") != self.cfg["settings"].get("mcp_servers")
@@ -2940,6 +2951,14 @@ class MainWindow(QMainWindow):
                 mcp.start_all(self.cfg["settings"].get("mcp_servers"))
                 self._info("MCP-Server werden neu gestartet …")
             self.config_changed()
+            web = getattr(self.ctrl, "web", None) if self.ctrl else None
+            if web:
+                was_on = bool(web.httpd)
+                web.apply(self.cfg["settings"])
+                if web.httpd and not was_on:       # gerade eingeschaltet → QR-Code gleich zeigen
+                    QTimer.singleShot(0, lambda: self.open_settings(tab="Handy"))
+                elif web.error:
+                    self._info(f"📱 {web.error}")
             if self.ctrl:     # anderes Fenster (Popup ↔ großes Fenster) mitziehen
                 for w in (self.ctrl.main, self.ctrl.popup):
                     if w is not None and w is not self:

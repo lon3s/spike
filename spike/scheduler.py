@@ -186,8 +186,16 @@ def due(now_ts: float) -> list[dict]:
 
 # ---------- Benachrichtigung ----------
 
+LISTENERS = []      # fn(title, body) – z. B. die Handy-Oberfläche
+
+
 def notify(title: str, body: str, on_open=None, urgent=False):
     """KDE-Benachrichtigung. Mit on_open bekommt sie einen „Öffnen“-Knopf (wartet im Hintergrund auf den Klick)."""
+    for fn in LISTENERS:
+        try:
+            fn(title, body)
+        except Exception as e:
+            print("Benachrichtigung weitergeben:", e)
     if not shutil.which("notify-send"):
         print("Benachrichtigung:", title, body)
         return

@@ -117,6 +117,8 @@ DEFAULT_CONFIG = {
         "tts_engine": "auto",                     # auto: VoxCPM wenn GPU frei, sonst Piper; oder voxcpm/piper
         "piper_model": "",                        # leer = erstes *.onnx in ~/.local/share/spike/piper
         "drive_index": True,                      # Dateisuche: /mnt täglich im Hintergrund indizieren
+        # Handy-Oberfläche (Webserver im Heimnetz)
+        "web_enabled": False, "web_port": 8765, "web_https": True,
     },
 }
 

@@ -170,7 +170,7 @@ def wetter(ort: str, ctx) -> str:
 spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 
 - **Linksklick**: Das Chat-Popup erscheint unten rechts. Ein Klick daneben schließt es wieder.
-- **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat, Markierten Text bearbeiten, Hilfe und Beenden.
+- **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat, Markierten Text bearbeiten, Handy verbinden, Hilfe und Beenden.
 - **Mittelklick**: großes Fenster.
 - Im Popup öffnet ⤢ denselben Chat im großen Fenster, Esc schließt das Popup.
 - 📌 im Popup heftet es an: Es bleibt offen, auch wenn du woanders klickst. Ein zweiter Klick löst es wieder.
@@ -180,6 +180,27 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 - Tastenkürzel (KDE): Systemeinstellungen → Tastatur → Kurzbefehle → „Neu“ → Befehl → `/home/<nutzer>/.local/bin/spike --popup` (voller Pfad!).
 - Autostart: `./install.sh --autostart` (Entfernen: `rm ~/.config/autostart/spike.desktop`).
 - Unter KDE/Wayland wird das Popup per layer-shell angedockt. Auf anderen Desktops wird es unten rechts platziert.
+
+## Auf dem Handy
+
+spike bringt eine Handy-Oberfläche mit: einen kleinen Webserver im Heimnetz (nur Python-Standardbibliothek). Der
+Chat läuft im Handy-Browser, Modell, Werkzeuge, Dateien und Freigaben bleiben auf dem PC.
+
+1. ⚙ Einstellungen → **Handy** → „Handy-Oberfläche einschalten“ → Speichern. Danach erscheint ein QR-Code
+   (braucht das Paket `qrencode`, sonst Link oder Schlüssel abtippen).
+2. QR-Code mit der Handy-Kamera scannen. Beim ersten Mal warnt der Browser vor dem selbst erstellten Zertifikat:
+   „Erweitert → Weiter“. HTTPS ist nötig, damit das Mikrofon im Browser funktioniert.
+3. Im Browser-Menü **Zum Startbildschirm hinzufügen** – dann startet spike wie eine App.
+
+Was geht: alle Chats (dieselben wie am PC, mit Suche, Umbenennen, Archiv, Löschen), Modell/Server/Profil/Denken
+wechseln, Freigaben (Ja / Immer / Nein oder „stattdessen …“ schreiben), Live-Ausgabe der Werkzeuge, Dateien und Fotos
+anhängen, Mikro gedrückt halten (Whisper auf dem PC), Antworten vorlesen (Piper vom PC, sonst die Stimme des Handys).
+Erinnerungen und „wartet auf Freigabe“ erscheinen als Meldung, solange die Seite offen ist.
+
+Sicherheit: Zugang nur mit Schlüssel (steckt im Link/QR-Code, ⚙ → Handy → „Neuen Schlüssel erzeugen“ sperrt alte
+Handys aus). **Den Port nie ins Internet freigeben** – spike kann Befehle auf dem PC ausführen. Für unterwegs ein VPN
+wie WireGuard oder Tailscale nehmen. Mit Firewall (z. B. ufw) muss der Port im Heimnetz frei sein:
+`sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp`.
 
 ## Bedienung
 

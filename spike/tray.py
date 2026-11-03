@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QMargins, Qt
+from PySide6.QtCore import QMargins, QObject, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
@@ -49,6 +49,10 @@ def _layer_shell(widget, margin=0) -> bool:
         return False
 
 
+class _WebBridge(QObject):
+    saved = Signal(str, object, bool)       # chat_id, geänderte Felder (oder None), gelöscht
+
+
 class Controller:
     def __init__(self, app):
         from .ui import MainWindow
@@ -66,6 +70,7 @@ class Controller:
         menu.addAction("Großes Fenster", lambda: self.show_main())
         menu.addAction("Neuer Chat", self.new_chat_popup)
         menu.addAction("Markierten Text bearbeiten", self.text_action)
+        menu.addAction("Handy verbinden …", self.show_phone)
         menu.addSeparator()
         menu.addAction("Hilfe", self.show_help)
         menu.addAction("Beenden", self.quit)
@@ -75,6 +80,47 @@ class Controller:
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         app.aboutToQuit.connect(self.browser.shutdown)
+
+        # Handy-Oberfläche (Webserver im Heimnetz, nur wenn eingeschaltet)
+        from . import config as C
+        from .web import WebApp
+        self._wb = _WebBridge()
+        self._wb.saved.connect(self._web_saved)
+        self.web = WebApp(self.browser, self)
+        self.web.apply(C.load_config()["settings"])
+        app.aboutToQuit.connect(self.web.stop)
+
+    # --- Handy: Abgleich mit den Fenstern (Aufrufe kommen aus Hintergrund-Threads) ---
+    def busy(self, chat_id):
+        return any(w is not None and w.agent and w.chat and w.chat.get("id") == chat_id
+                   for w in (self.main, self.popup))
+
+    def saved(self, chat_id, meta=None, deleted=False):
+        self._wb.saved.emit(chat_id, meta, deleted)
+
+    def _web_saved(self, chat_id, meta, deleted):
+        from . import config as C
+        for w in (self.main, self.popup):
+            if w is None:
+                continue
+            open_here = w.chat is not None and w.chat.get("id") == chat_id
+            if open_here and not w.agent:
+                if deleted:
+                    w.chat = None
+                    w.new_chat()
+                elif meta:
+                    w._apply_meta(chat_id, **meta)
+                else:
+                    try:
+                        w.chat = C.load_chat(chat_id)
+                        w.redraw(force_bottom=True)
+                    except FileNotFoundError:
+                        pass
+            w._load_chat_list_keep()
+
+    def show_phone(self):
+        self.show_main()
+        self.main.open_settings(tab="Handy")
 
     def tray_active(self):
         return self.tray.isVisible()
