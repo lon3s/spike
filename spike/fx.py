@@ -1,4 +1,5 @@
-"""Animierte Hintergrund-Effekte, die über dem ganzen Fenster liegen (Klicks gehen durch).
+"""Animierte Hintergrund-Effekte. Die Ebene liegt ganz unten hinter dem Inhalt (Klicks gehen durch):
+sie leuchtet nur dort, wo der Hintergrund frei ist – Text, Karten und Code-Blöcke bleiben darüber klar.
 
 CRT = Röhrenmonitor: feine Scanlines, abgedunkelte Ränder (Wölbung), ein heller Bildwiederhol-Balken, der langsam
 nach unten rollt, und ab und zu ein kurzes Flackern. Pro Bild wird nur der schmale Streifen um den Balken neu
@@ -52,7 +53,7 @@ class CRTOverlay(QWidget):
         if on:
             self.setGeometry(self.host.rect())
             self.show()
-            self.raise_()
+            self.lower()              # hinter allen anderen Kindern des Fensters
             self.timer.start()
         else:
             self.timer.stop()
@@ -109,9 +110,9 @@ class CRTOverlay(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setClipPath(self._clip())
         # Scanlines: jede dritte Zeile etwas dunkler, dazwischen ein Hauch Phosphor-Grün
-        dark = QColor(0, 0, 0, 46)
+        dark = QColor(0, 0, 0, 70)
         glow = QColor(self.tint)
-        glow.setAlpha(7)
+        glow.setAlpha(12)
         for y in range(0, h, 3):
             p.fillRect(0, y, w, 1, dark)
             p.fillRect(0, y + 1, w, 1, glow)
@@ -138,13 +139,13 @@ class CRTOverlay(QWidget):
             g = QLinearGradient(QPointF(0, band.top()), QPointF(0, band.bottom()))
             c0, c1 = QColor(self.tint), QColor(self.tint)
             c0.setAlpha(0)
-            c1.setAlpha(16)
+            c1.setAlpha(34)
             g.setColorAt(0.0, c0)
             g.setColorAt(0.75, c1)
-            g.setColorAt(0.9, QColor(255, 255, 255, 14))
+            g.setColorAt(0.9, QColor(255, 255, 255, 22))
             g.setColorAt(1.0, c0)
             p.fillRect(band, g)
         if self._flicker_until:
             p.setClipPath(self._clip())
-            p.fillRect(self.rect(), QColor(255, 255, 255, 9))
+            p.fillRect(self.rect(), QColor(255, 255, 255, 14))
         p.end()

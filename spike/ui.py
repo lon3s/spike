@@ -1670,7 +1670,14 @@ class MainWindow(QMainWindow):
         self.colors = THEMES.get(mode, THEMES["dark"])
         app = QApplication.instance()
         app.setPalette(palette(self.colors))
-        app.setStyleSheet(qss(self.colors))
+        fx_on = fx_wanted(self.cfg["settings"], self.colors) == "crt"
+        extra = ""
+        if fx_on:   # Hintergrund-Effekt soll hinter dem Chat sichtbar sein → Flächen darüber durchsichtig
+            side = QColor(self.colors["panel"])
+            extra = (f"QScrollArea#Chat, #ChatInner, #ChatColumn, QScrollArea#Chat > QWidget, #TopBar"
+                     f" {{ background: transparent; }}"
+                     f" #Side {{ background: rgba({side.red()}, {side.green()}, {side.blue()}, 200); }}")
+        app.setStyleSheet(qss(self.colors) + extra)
         style = self.cfg["settings"].get("input_style", "standard")
         self.composer.set_style(style, self.colors, compact=self.popup)
         if style in ("neon", "linie"):    # leuchtet bzw. hat keine Fläche → kein Schatten
@@ -1684,8 +1691,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_ctx_used"):
             self._update_meta()           # Kontext-Balken in der neuen Akzentfarbe
         if getattr(self, "fx", None) is not None:
-            self.fx.set_active(fx_wanted(self.cfg["settings"], self.colors) == "crt",
-                               tint=self.colors.get("accent"))
+            self.fx.set_active(fx_on, tint=self.colors.get("accent"))
         if self.chat is not None:
             self.redraw()
 
