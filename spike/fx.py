@@ -188,7 +188,7 @@ class TextFlicker(QWidget):
     Hintergrundfarbe und die einzelnen Zeichen erkannt und diese dann für ein paar Bilder versetzt gezeichnet.
     Braucht numpy; ohne bleibt der Text ruhig. Außerhalb des Flackerns ausgeblendet.
     """
-    AMP = [1, 2, 1, 1, 1, 0]           # Stärke pro Bild à 35 ms – meist 1 px, kurz 2 px, klingt aus
+    AMP = [1, 2, 1, 1, 1, 0]           # Stärke pro Bild à 90 ms – meist 1 px, kurz 2 px, klingt aus
 
     def __init__(self, host, radius=0):
         super().__init__(host)
@@ -200,7 +200,7 @@ class TextFlicker(QWidget):
         self.step = 0
         self.offsets = []
         self.timer = QTimer(self)
-        self.timer.setInterval(35)
+        self.timer.setInterval(90)
         self.timer.timeout.connect(self._next)
         self.hide()
 
