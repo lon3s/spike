@@ -14,6 +14,8 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
 
 - **Mehrere Server und APIs**: Endpunkte mit IP:Port oder URL und optionalem API-Key anlegen, im Chat umschalten,
   Modelle werden automatisch vom Server geladen.
+- **Designs**: System (hell/dunkel), Dunkel, Hell, Cyberpunk, Matrix (Monospace-Schrift), Solarized dunkel/hell, Nord,
+  Dracula, Gruvbox – unter ⚙ → Design. Jedes Design bringt passende Farben für den Popup-Leuchtrahmen mit.
 - **Profile**: pro Vorgang eigener System-Prompt, Temperatur und Werkzeug-Auswahl (`{date}` wird ersetzt).
 - **Werkzeuge**: `web_search` (DuckDuckGo), `fetch_url`, Browser (Playwright: öffnen, lesen, klicken, tippen,
   zurück), `run_shell`, `read_file`, `list_dir`, `write_file`. Shell-Befehle und Schreibzugriffe muss man bestätigen.

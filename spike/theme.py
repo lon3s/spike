@@ -12,15 +12,79 @@ THEMES = {
         "name": "dark", "bg": "#14151a", "panel": "#1b1c22", "panel2": "#24252d", "border": "#30313b",
         "text": "#e7e7ec", "muted": "#8a8c99", "accent": "#7c6cf0", "accent_hover": "#8f81f5",
         "accent_text": "#ffffff", "user": "#2a2748", "user_top": "#7a69f3", "user_bottom": "#5443d2", "user_code": "#4535c2", "code": "#0d0e12", "chip": "#22232b",
-        "danger": "#e5676b", "sel": "#2f2b55",
+        "danger": "#e5676b", "sel": "#2f2b55", "label": "Dunkel", "dark": True, "popup": "#25262c",
     },
     "light": {
         "name": "light", "bg": "#f7f7f9", "panel": "#ffffff", "panel2": "#efeff3", "border": "#dedee5",
         "text": "#1c1c22", "muted": "#6c6e7a", "accent": "#6a5ae0", "accent_hover": "#5a4ad0",
         "accent_text": "#ffffff", "user": "#ebe8ff", "user_top": "#7d6df2", "user_bottom": "#5d4ce0", "user_code": "#4b3bd0", "code": "#f1f1f5", "chip": "#f0f0f4",
-        "danger": "#c9444a", "sel": "#e3dfff",
+        "danger": "#c9444a", "sel": "#e3dfff", "label": "Hell", "dark": False, "popup": "#ececef",
+    },
+    # Optionale Schlüssel: label (Anzeigename), dark (Schatten/Popup), popup (Popup-Fläche „grau“),
+    # user_text (Schrift in der eigenen Sprechblase), font (Schriftfamilie), glow (Farben für den Popup-Rahmen)
+    "cyberpunk": {
+        "name": "cyberpunk", "label": "Cyberpunk", "dark": True,
+        "bg": "#0b0218", "panel": "#140630", "panel2": "#1e0b44", "border": "#3d1a6e",
+        "text": "#f3e8ff", "muted": "#9d86cf", "accent": "#ff2a6d", "accent_hover": "#ff5289",
+        "accent_text": "#ffffff", "user": "#3a0f45", "user_top": "#ff2a6d", "user_bottom": "#7a1fa8",
+        "user_code": "#5a0f7a", "code": "#07010f", "chip": "#180838", "danger": "#ff4d4d", "sel": "#3b1160",
+        "popup": "#12052a", "glow": ["#ff2a6d", "#05d9e8", "#d1f7ff"],
+    },
+    "matrix": {
+        "name": "matrix", "label": "Matrix", "dark": True,
+        "bg": "#000800", "panel": "#021204", "panel2": "#041c08", "border": "#0c3a14",
+        "text": "#a8ffb6", "muted": "#3a9a4c", "accent": "#00e639", "accent_hover": "#3dff6a",
+        "accent_text": "#001a06", "user": "#03260c", "user_top": "#0a5a1e", "user_bottom": "#043a12",
+        "user_code": "#022a0c", "code": "#000400", "chip": "#03170a", "danger": "#ff5050", "sel": "#073814",
+        "popup": "#010e03", "user_text": "#d4ffdc",
+        "font": "'JetBrains Mono', 'Fira Code', 'Hack', 'DejaVu Sans Mono', monospace",
+        "glow": ["#00ff41", "#008f11", "#b8ffc4"],
+    },
+    "solarized": {
+        "name": "solarized", "label": "Solarized dunkel", "dark": True,
+        "bg": "#002b36", "panel": "#073642", "panel2": "#0b404d", "border": "#1b505d",
+        "text": "#c4cfcf", "muted": "#7b9399", "accent": "#268bd2", "accent_hover": "#3d9ae0",
+        "accent_text": "#ffffff", "user": "#0d4459", "user_top": "#268bd2", "user_bottom": "#1b6aa5",
+        "user_code": "#155a8c", "code": "#00212a", "chip": "#06323d", "danger": "#dc322f", "sel": "#0e4a5a",
+        "popup": "#04313d", "glow": ["#268bd2", "#2aa198", "#b58900"],
+    },
+    "solarized_light": {
+        "name": "solarized_light", "label": "Solarized hell", "dark": False,
+        "bg": "#fdf6e3", "panel": "#fffbef", "panel2": "#eee8d5", "border": "#ddd5bd",
+        "text": "#3f5359", "muted": "#7f8f91", "accent": "#268bd2", "accent_hover": "#1d76b6",
+        "accent_text": "#ffffff", "user": "#e2edf2", "user_top": "#268bd2", "user_bottom": "#1b6aa5",
+        "user_code": "#155a8c", "code": "#f2ebd6", "chip": "#f4eedb", "danger": "#dc322f", "sel": "#dde8e6",
+        "popup": "#f3ecd8", "glow": ["#268bd2", "#2aa198", "#cb4b16"],
+    },
+    "nord": {
+        "name": "nord", "label": "Nord", "dark": True,
+        "bg": "#2e3440", "panel": "#353c4a", "panel2": "#3d4556", "border": "#4c566a",
+        "text": "#eceff4", "muted": "#9aa5b8", "accent": "#88c0d0", "accent_hover": "#9ccddb",
+        "accent_text": "#242933", "user": "#3b4a5e", "user_top": "#5e81ac", "user_bottom": "#4a6890",
+        "user_code": "#3d5779", "code": "#262b35", "chip": "#363d4b", "danger": "#bf616a", "sel": "#44526a",
+        "popup": "#333a47", "glow": ["#88c0d0", "#81a1c1", "#b48ead"],
+    },
+    "dracula": {
+        "name": "dracula", "label": "Dracula", "dark": True,
+        "bg": "#21222c", "panel": "#282a36", "panel2": "#323445", "border": "#44475a",
+        "text": "#f8f8f2", "muted": "#8a93c4", "accent": "#bd93f9", "accent_hover": "#cba8fb",
+        "accent_text": "#1e1f29", "user": "#3a3360", "user_top": "#9b6cf2", "user_bottom": "#6d43c8",
+        "user_code": "#5935a8", "code": "#191a21", "chip": "#2a2c3a", "danger": "#ff5555", "sel": "#44475a",
+        "popup": "#272935", "glow": ["#bd93f9", "#ff79c6", "#8be9fd"],
+    },
+    "gruvbox": {
+        "name": "gruvbox", "label": "Gruvbox", "dark": True,
+        "bg": "#1d2021", "panel": "#282828", "panel2": "#32302f", "border": "#504945",
+        "text": "#ebdbb2", "muted": "#a89984", "accent": "#fe8019", "accent_hover": "#fe9644",
+        "accent_text": "#1d2021", "user": "#3c3026", "user_top": "#d65d0e", "user_bottom": "#a53e05",
+        "user_code": "#8a3304", "code": "#161819", "chip": "#2a2827", "danger": "#fb4934", "sel": "#45403d",
+        "popup": "#262625", "glow": ["#fe8019", "#fabd2f", "#b8bb26"],
     },
 }
+
+
+def is_dark(c) -> bool:
+    return bool(c.get("dark", c.get("name") != "light"))
 
 
 def palette(c) -> QPalette:
@@ -36,7 +100,7 @@ def palette(c) -> QPalette:
 
 def qss(c) -> str:
     return f"""
-    QWidget {{ color: {c['text']}; font-size: 10.5pt; }}
+    QWidget {{ color: {c['text']}; font-size: 10.5pt;{f" font-family: {c['font']};" if c.get('font') else ""} }}
     QMainWindow, QDialog {{ background: {c['bg']}; }}
     QMainWindow#Popup {{ background: transparent; }}
     #Side {{ background: {c['panel']}; border-right: 1px solid {c['border']}; }}
@@ -46,7 +110,7 @@ def qss(c) -> str:
     #UserBubble {{ background: qlineargradient(x1:0, y1:0, x2:0.35, y2:1, stop:0 {c['user_top']},
                    stop:1 {c['user_bottom']}); border: 1px solid rgba(255, 255, 255, 30);
                    border-radius: 18px; border-bottom-right-radius: 8px; }}
-    #UserBubble QLabel {{ color: #ffffff; background: transparent; }}
+    #UserBubble QLabel {{ color: {c.get('user_text', '#ffffff')}; background: transparent; }}
     #Code {{ background: {c['code']}; border: 1px solid {c['border']}; border-radius: 12px; }}
     #CodeLang {{ color: {c['muted']}; font-size: 8.5pt; font-weight: 600; }}
     #CodeText {{ color: {c['text']}; background: transparent; }}

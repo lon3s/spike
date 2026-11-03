@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from .theme import md_html
+from .theme import is_dark, md_html
 from .tools import short_args
 
 _FENCE = re.compile(r"```([^\n`]*)\n(.*?)(?:```|\Z)", re.S)
@@ -20,7 +20,7 @@ MAX_W = 860
 
 
 def shadow(widget, c, blur=22, dy=4, strength=1.0):
-    dark = c.get("name") == "dark"
+    dark = is_dark(c)
     eff = QGraphicsDropShadowEffect(widget)
     eff.setBlurRadius(blur)
     eff.setOffset(0, dy)

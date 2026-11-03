@@ -23,7 +23,7 @@ from . import config as C
 from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
-from .theme import THEMES, palette, qss
+from .theme import THEMES, is_dark, palette, qss
 from . import attachments as A, mcp, memory, plugins, scheduler as S, speech
 from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
@@ -383,8 +383,11 @@ class SettingsDialog(QDialog):
         self.sp_steps = QSpinBox(); self.sp_steps.setRange(1, 100); self.sp_steps.setValue(s["max_steps"])
         self.sp_ctx = QSpinBox(); self.sp_ctx.setRange(512, 2_000_000); self.sp_ctx.setValue(s["default_n_ctx"])
         self.cb_head = QCheckBox("Browser unsichtbar (headless)"); self.cb_head.setChecked(s["browser_headless"])
-        self.cb_theme = QComboBox(); self.cb_theme.addItems(["system", "dark", "light"])
-        self.cb_theme.setCurrentText(s.get("theme", "system"))
+        self.cb_theme = QComboBox()
+        self.cb_theme.addItem("System (hell/dunkel)", "system")
+        for key, t in THEMES.items():
+            self.cb_theme.addItem(t.get("label", key), key)
+        self.cb_theme.setCurrentIndex(max(0, self.cb_theme.findData(s.get("theme", "system"))))
         f.addRow("Design", self.cb_theme)
         f.addRow("Max. Zeichen pro Werkzeug-Ausgabe", self.sp_out)
         f.addRow("Letzte N Werkzeug-Ausgaben voll behalten", self.sp_keep)
@@ -718,6 +721,7 @@ class SettingsDialog(QDialog):
         self.glow_row.setContentsMargins(0, 0, 0, 0)
         f.addRow("Farben", crow)
         self._glow_buttons()
+        self.cb_theme.currentIndexChanged.connect(self._theme_glow)   # Design bringt passende Rahmenfarben mit
 
         self.sp_glow_speed = QDoubleSpinBox()
         self.sp_glow_speed.setRange(0.5, 60)
@@ -875,13 +879,19 @@ class SettingsDialog(QDialog):
             ctx = f", Kontext {n_ctx}" if n_ctx else ""
             self.test_label.setText(f"✅ {len(models)} Modell(e){ctx}: {', '.join(models[:5])}")
 
+    def _theme_glow(self):
+        t = THEMES.get(self.cb_theme.currentData()) or {}
+        if t.get("glow"):
+            self.glow_colors = list(t["glow"])
+            self._glow_buttons()
+
     def result_config(self):
         s = self.cfg["settings"]
         s.update(tool_output_max_chars=self.sp_out.value(), keep_full_tool_results=self.sp_keep.value(),
                  old_tool_result_chars=self.sp_old.value(), max_steps=self.sp_steps.value(),
                  default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked(),
                  drive_index=self.cb_index.isChecked(),
-                 theme=self.cb_theme.currentText(),
+                 theme=self.cb_theme.currentData(),
                  popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
                  popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
                  popup_glow_width=self.sp_glow_width.value(),
@@ -1026,7 +1036,7 @@ class PopupShell(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        dark = self.win.colors.get("name") == "dark"
+        dark = is_dark(self.win.colors)
         r = self.frame.geometry().translated(0, 4)
         for i in range(self.PAD, 0, -1):    # weicher Schatten aus vielen halbtransparenten Ringen
             alpha = int((10 if dark else 5) * (1 - i / self.PAD) ** 1.6 * 2.2)
@@ -1079,7 +1089,7 @@ def popup_bg(s, c):
     if mode == "eigen" and QColor(s.get("popup_bg_color", "")).isValid():
         base = QColor(s["popup_bg_color"])
     elif mode == "grau":
-        base = QColor(POPUP_GREY.get(c.get("name"), "#25262c"))
+        base = QColor(c.get("popup") or POPUP_GREY.get(c.get("name"), c["bg"]))
     else:
         base = QColor(c["bg"])
     alpha = max(10, min(100, int(s.get("popup_bg_opacity", 100)))) * 255 // 100
@@ -1612,7 +1622,7 @@ class MainWindow(QMainWindow):
         if mode == "system":
             dark = QApplication.styleHints().colorScheme() != Qt.ColorScheme.Light
             mode = "dark" if dark else "light"
-        self.colors = THEMES[mode]
+        self.colors = THEMES.get(mode, THEMES["dark"])
         app = QApplication.instance()
         app.setPalette(palette(self.colors))
         app.setStyleSheet(qss(self.colors))
@@ -1620,11 +1630,13 @@ class MainWindow(QMainWindow):
         shell = self.centralWidget()
         if isinstance(shell, PopupShell):
             shell.restyle()
+        if hasattr(self, "_ctx_used"):
+            self._update_meta()           # Kontext-Balken in der neuen Akzentfarbe
         if self.chat is not None:
             self.redraw()
 
     def toggle_theme(self):
-        self.cfg["settings"]["theme"] = "light" if self.colors is THEMES["dark"] else "dark"
+        self.cfg["settings"]["theme"] = "light" if is_dark(self.colors) else "dark"
         C.save_config(self.cfg)
         self.apply_theme()
 
