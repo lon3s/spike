@@ -24,7 +24,7 @@ from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .composer import STYLES as INPUT_STYLES, Composer
-from .fx import FX, CRTOverlay, wanted as fx_wanted
+from .fx import FX, CRTOverlay, TextFlicker, wanted as fx_wanted
 from .theme import THEMES, is_dark, palette, qss
 from . import attachments as A, mcp, memory, plugins, scheduler as S, speech
 from . import tools as T
@@ -1600,9 +1600,11 @@ class MainWindow(QMainWindow):
             shell = PopupShell(root, self)
             self.setCentralWidget(shell)
             self.fx = CRTOverlay(shell.frame, radius=PopupShell.RADIUS)   # Effekt nur innerhalb der runden Fläche
+            self.fx_text = TextFlicker(shell.frame, radius=PopupShell.RADIUS)
         else:
             self.setCentralWidget(root)
             self.fx = CRTOverlay(root)
+            self.fx_text = TextFlicker(root)
 
         # --- Statusleiste ---
         self.status = QLabel()
@@ -1670,7 +1672,8 @@ class MainWindow(QMainWindow):
         self.colors = THEMES.get(mode, THEMES["dark"])
         app = QApplication.instance()
         app.setPalette(palette(self.colors))
-        fx_on = fx_wanted(self.cfg["settings"], self.colors) == "crt"
+        fx_mode = fx_wanted(self.cfg["settings"], self.colors)
+        fx_on = fx_mode in ("crt", "crt_text")
         extra = ""
         if fx_on:   # Hintergrund-Effekt soll hinter dem Chat sichtbar sein → Flächen darüber durchsichtig
             side = QColor(self.colors["panel"])
@@ -1692,6 +1695,7 @@ class MainWindow(QMainWindow):
             self._update_meta()           # Kontext-Balken in der neuen Akzentfarbe
         if getattr(self, "fx", None) is not None:
             self.fx.set_active(fx_on, tint=self.colors.get("accent"))
+            self.fx.text_flicker = self.fx_text if fx_mode == "crt_text" else None
         if self.chat is not None:
             self.redraw()
 

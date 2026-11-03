@@ -12,7 +12,8 @@ from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
-FX = [("auto", "Vom Design (z. B. Matrix → Röhrenmonitor)"), ("aus", "Aus"), ("crt", "Röhrenmonitor (immer)")]
+FX = [("auto", "Vom Design (z. B. Matrix → Röhrenmonitor)"), ("aus", "Aus"), ("crt", "Röhrenmonitor (immer)"),
+      ("crt_text", "Röhrenmonitor + flackernder Text")]
 
 
 def wanted(settings, colors) -> str:
@@ -39,6 +40,7 @@ class CRTOverlay(QWidget):
         self._last_band = QRect()
         self._flicker_until = 0.0
         self._next_flicker = time.monotonic() + random.uniform(4, 9)
+        self.text_flicker = None      # TextFlicker-Ebene: beim Flackern flackert auch der Inhalt
         self.timer = QTimer(self)
         self.timer.setInterval(int(1000 / self.FPS))
         self.timer.timeout.connect(self._frame)
@@ -84,6 +86,8 @@ class CRTOverlay(QWidget):
             self._flicker_until = now + random.uniform(0.06, 0.12)
             self._next_flicker = now + random.uniform(4, 10)
             self.update()
+            if self.text_flicker is not None:
+                self.text_flicker.flash()
             return
         if self._flicker_until and now > self._flicker_until:
             self._flicker_until = 0.0
@@ -148,4 +152,69 @@ class CRTOverlay(QWidget):
         if self._flicker_until:
             p.setClipPath(self._clip())
             p.fillRect(self.rect(), QColor(255, 255, 255, 14))
+        p.end()
+
+
+class TextFlicker(QWidget):
+    """Liegt nur während eines Flackerns kurz über dem Fenster: zeigt ein Abbild des Inhalts, das dunkler/heller
+    wird, und verschiebt ein paar Bildzeilen seitlich – so flackern auch die Buchstaben. Sonst ausgeblendet."""
+    # (Abdunkeln 0–255, Aufhellen 0–255, verrutschte Zeilen ja/nein) pro Bild à 30 ms
+    SEQ = [(110, 0, True), (20, 26, False), (70, 0, True), (0, 14, False), (40, 0, False)]
+
+    def __init__(self, host, radius=0):
+        super().__init__(host)
+        self.host, self.radius = host, radius
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.snap = None
+        self.step = 0
+        self.bands = []
+        self.timer = QTimer(self)
+        self.timer.setInterval(30)
+        self.timer.timeout.connect(self._next)
+        self.hide()
+
+    def flash(self):
+        if self.isVisible() or not self.host.isVisible():
+            return
+        self.snap = self.host.grab()                 # Abbild ohne diese Ebene (sie ist gerade unsichtbar)
+        h = max(1, self.host.height())
+        self.bands = []
+        for _ in range(random.randint(2, 4)):        # ein paar Zeilenstreifen, die seitlich verrutschen
+            y = random.randint(0, h - 10)
+            self.bands.append((y, random.randint(4, 26), random.choice((-1, 1)) * random.randint(2, 7)))
+        self.step = 0
+        self.setGeometry(self.host.rect())
+        self.show()
+        self.raise_()
+        self.timer.start()
+
+    def _next(self):
+        self.step += 1
+        if self.step >= len(self.SEQ):
+            self.timer.stop()
+            self.hide()
+            self.snap = None
+            return
+        self.update()
+
+    def paintEvent(self, e):
+        if self.snap is None:
+            return
+        dim, light, shift = self.SEQ[min(self.step, len(self.SEQ) - 1)]
+        p = QPainter(self)
+        if self.radius:
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
+            p.setClipPath(path)
+        dpr = self.snap.devicePixelRatio() or 1
+        p.drawPixmap(0, 0, self.snap)
+        if shift:
+            for y, hh, dx in self.bands:
+                src = QRect(0, int(y * dpr), self.snap.width(), int(hh * dpr))
+                p.drawPixmap(QRect(dx, y, self.width(), hh), self.snap, src)
+        if dim:
+            p.fillRect(self.rect(), QColor(0, 0, 0, dim))
+        if light:
+            p.fillRect(self.rect(), QColor(255, 255, 255, light))
         p.end()
