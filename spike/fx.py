@@ -155,11 +155,40 @@ class CRTOverlay(QWidget):
         p.end()
 
 
+def _glyph_boxes(arr, bg):
+    """arr: HxWx4 (BGRA) eines Textbereichs. Gibt (Alpha-Maske, [(x0, y0, x1, y1), …]) für einzelne Zeichen zurück."""
+    import numpy as np
+    diff = np.abs(arr[:, :, :3].astype(np.int16) - np.array(bg[:3], np.int16)).sum(axis=2)
+    alpha = np.clip((diff - 18) * 4, 0, 255).astype(np.uint8)    # Kantenglättung bleibt weich
+    ink = diff > 60
+    boxes = []
+    rows = np.flatnonzero(ink.any(axis=1))
+    if rows.size == 0:
+        return alpha, boxes
+    # Textzeilen: zusammenhängende Zeilenbereiche mit Tinte (Lücke ≥ 2 px trennt)
+    splits = np.flatnonzero(np.diff(rows) > 2)
+    for band in np.split(rows, splits + 1):
+        y0, y1 = int(band[0]), int(band[-1]) + 1
+        cols = np.flatnonzero(ink[y0:y1].any(axis=0))
+        if cols.size == 0:
+            continue
+        csplit = np.flatnonzero(np.diff(cols) > 1)           # leere Spalte trennt Zeichen
+        for run in np.split(cols, csplit + 1):
+            x0, x1 = int(run[0]), int(run[-1]) + 1
+            if x1 - x0 > 40:                                  # zusammenhängende Linie o. Ä. → nicht zittern
+                continue
+            boxes.append((x0, y0, x1, y1))
+    return alpha, boxes
+
+
 class TextFlicker(QWidget):
-    """Liegt nur während eines Flackerns kurz über dem Fenster und zeigt ein Abbild des Inhalts, das um 1–2 px
-    hin- und herzittert – die Buchstaben vibrieren kurz. Keine Helligkeitsänderung. Sonst ausgeblendet."""
-    # Versatz (dx, dy) pro Bild à 30 ms – ein kurzes, unruhiges Zittern, das wieder zur Ruhe kommt
-    SEQ = [(2, 0), (-1, 1), (1, -1), (-2, 0), (1, 1), (-1, 0), (1, 0), (0, 0)]
+    """Beim Flackern zittern die einzelnen Buchstaben (jeder für sich, um 1–2 px), Felder und Rahmen bleiben ruhig.
+
+    Dafür wird einmal ein Abbild aufgenommen, in jedem Textbereich (QLabel, Eingabefeld, Textfelder) die
+    Hintergrundfarbe und die einzelnen Zeichen erkannt und diese dann für ein paar Bilder versetzt gezeichnet.
+    Braucht numpy; ohne bleibt der Text ruhig. Außerhalb des Flackerns ausgeblendet.
+    """
+    AMP = [1, 2, 1, 1, 1, 0]           # Stärke pro Bild à 35 ms – meist 1 px, kurz 2 px, klingt aus
 
     def __init__(self, host, radius=0):
         super().__init__(host)
@@ -167,40 +196,104 @@ class TextFlicker(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setFocusPolicy(Qt.NoFocus)
         self.snap = None
+        self.parts = []          # [(QRect Bereich, QColor bg, QImage Zeichen mit Alpha, [boxes])]
         self.step = 0
+        self.offsets = []
         self.timer = QTimer(self)
-        self.timer.setInterval(30)
+        self.timer.setInterval(35)
         self.timer.timeout.connect(self._next)
         self.hide()
+
+    def _text_regions(self):
+        from PySide6.QtWidgets import QAbstractScrollArea, QLabel
+        out = []
+        host_rect = self.host.rect()
+        for w in self.host.findChildren(QLabel):
+            if w.isVisible() and w.text() and w.pixmap().isNull() and w is not self:
+                out.append(w)
+        for w in self.host.findChildren(QAbstractScrollArea):
+            if w.isVisible() and hasattr(w, "toPlainText") and w.toPlainText():
+                out.append(w.viewport())
+        rects = []
+        for w in out:
+            r = QRect(w.mapTo(self.host, w.rect().topLeft()), w.size()).intersected(host_rect)
+            if r.width() > 2 and r.height() > 2:
+                rects.append(r)
+        return rects
 
     def flash(self):
         if self.isVisible() or not self.host.isVisible():
             return
-        self.snap = self.host.grab()                 # Abbild ohne diese Ebene (sie ist gerade unsichtbar)
+        try:
+            import numpy as np
+        except ImportError:
+            return
+        from PySide6.QtGui import QImage
+        self.snap = self.host.grab()
+        dpr = self.snap.devicePixelRatio() or 1.0
+        img = self.snap.toImage().convertToFormat(QImage.Format_ARGB32)
+        W, H = img.width(), img.height()
+        full = np.frombuffer(img.constBits(), np.uint8, count=img.sizeInBytes()).reshape(H, img.bytesPerLine())[:, :W * 4]
+        full = full.reshape(H, W, 4)
+        self.parts = []
+        for r in self._text_regions():
+            x0, y0 = int(r.x() * dpr), int(r.y() * dpr)
+            x1, y1 = min(W, int(r.right() * dpr) + 1), min(H, int(r.bottom() * dpr) + 1)
+            arr = full[y0:y1, x0:x1]
+            if arr.size == 0:
+                continue
+            flat = arr[:, :, :3].reshape(-1, 3)
+            vals, counts = np.unique(flat[:: max(1, flat.shape[0] // 4000)], axis=0, return_counts=True)
+            bg = vals[counts.argmax()]                         # häufigste Farbe = Hintergrund
+            alpha, boxes = _glyph_boxes(arr, bg)
+            if not boxes:
+                continue
+            rgba = np.ascontiguousarray(arr.copy())
+            rgba[:, :, 3] = alpha
+            gi = QImage(rgba.data, rgba.shape[1], rgba.shape[0], rgba.shape[1] * 4, QImage.Format_ARGB32).copy()
+            self.parts.append((QRect(x0, y0, x1 - x0, y1 - y0), QColor(int(bg[2]), int(bg[1]), int(bg[0])), gi, boxes))
+        if not self.parts:
+            self.snap = None
+            return
         self.step = 0
+        self._roll()
         self.setGeometry(self.host.rect())
         self.show()
         self.raise_()
         self.timer.start()
 
+    def _roll(self):
+        a = self.AMP[min(self.step, len(self.AMP) - 1)]
+        self.offsets = [[(random.randint(-a, a), random.randint(-a, a)) for _ in boxes]
+                        for _r, _bg, _gi, boxes in self.parts]
+
     def _next(self):
         self.step += 1
-        if self.step >= len(self.SEQ):
+        if self.step >= len(self.AMP):
             self.timer.stop()
             self.hide()
-            self.snap = None
+            self.snap, self.parts = None, []
             return
+        self._roll()
         self.update()
 
     def paintEvent(self, e):
         if self.snap is None:
             return
-        dx, dy = self.SEQ[min(self.step, len(self.SEQ) - 1)]
+        dpr = self.snap.devicePixelRatio() or 1.0
         p = QPainter(self)
         if self.radius:
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
             p.setClipPath(path)
-        p.drawPixmap(0, 0, self.snap)                # ruhiges Bild darunter füllt die Ränder beim Verschieben
-        p.drawPixmap(dx, dy, self.snap)
+        p.drawPixmap(0, 0, self.snap)
+        for (reg, bg, gi, boxes), offs in zip(self.parts, self.offsets):
+            ox, oy = reg.x() / dpr, reg.y() / dpr
+            for (x0, y0, x1, y1), (dx, dy) in zip(boxes, offs):
+                tgt = QRectF(ox + x0 / dpr, oy + y0 / dpr, (x1 - x0) / dpr, (y1 - y0) / dpr)
+                p.fillRect(tgt, bg)                          # Zeichen an alter Stelle löschen …
+            for (x0, y0, x1, y1), (dx, dy) in zip(boxes, offs):
+                src = QRectF(x0, y0, x1 - x0, y1 - y0)
+                tgt = QRectF(ox + x0 / dpr + dx, oy + y0 / dpr + dy, (x1 - x0) / dpr, (y1 - y0) / dpr)
+                p.drawImage(tgt, gi, src)                    # … und versetzt neu zeichnen
         p.end()
