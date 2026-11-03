@@ -24,6 +24,7 @@ from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .composer import STYLES as INPUT_STYLES, Composer
+from .fx import FX, CRTOverlay, wanted as fx_wanted
 from .theme import THEMES, is_dark, palette, qss
 from . import attachments as A, mcp, memory, plugins, scheduler as S, speech
 from . import tools as T
@@ -52,6 +53,23 @@ class InputBox(QPlainTextEdit):
         super().resizeEvent(e)
         if e.oldSize().width() != e.size().width():   # andere Breite → Umbruch und damit Höhe ändern sich
             QTimer.singleShot(0, self._fit)
+            self._apply_placeholder()
+
+    # Platzhalter nie umbrechen (die Höhe richtet sich nur nach echtem Text) – zu lang → mit „…“ kürzen
+    _placeholder = ""
+
+    def setPlaceholderText(self, text):
+        self._placeholder = text or ""
+        self._apply_placeholder()
+
+    def _apply_placeholder(self):
+        room = max(40, self.viewport().width() - 12)
+        super().setPlaceholderText(self.fontMetrics().elidedText(self._placeholder, Qt.ElideRight, room))
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._apply_placeholder()
 
     key_hook = None     # fn(key) -> True, wenn die Taste verbraucht wurde (Befehlsliste)
     attach_hook = None  # fn(mime) -> True, wenn Bild/Dateien als Anhang übernommen wurden
@@ -400,6 +418,11 @@ class SettingsDialog(QDialog):
             self.cb_input.addItem(label, key)
         self.cb_input.setCurrentIndex(max(0, self.cb_input.findData(s.get("input_style", "standard"))))
         f.addRow("Eingabefeld", self.cb_input)
+        self.cb_fx = QComboBox()
+        for key, label in FX:
+            self.cb_fx.addItem(label, key)
+        self.cb_fx.setCurrentIndex(max(0, self.cb_fx.findData(s.get("bg_fx", "auto"))))
+        f.addRow("Hintergrund-Effekt", self.cb_fx)
         f.addRow("Max. Zeichen pro Werkzeug-Ausgabe", self.sp_out)
         f.addRow("Letzte N Werkzeug-Ausgaben voll behalten", self.sp_keep)
         f.addRow("Ältere Werkzeug-Ausgaben kürzen auf (Zeichen)", self.sp_old)
@@ -905,6 +928,7 @@ class SettingsDialog(QDialog):
                  default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked(),
                  drive_index=self.cb_index.isChecked(),
                  theme=self.cb_theme.currentData(), input_style=self.cb_input.currentData(),
+                 bg_fx=self.cb_fx.currentData(),
                  popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
                  popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
                  popup_glow_width=self.sp_glow_width.value(),
@@ -1570,9 +1594,12 @@ class MainWindow(QMainWindow):
         rl.addWidget(main, 1)
         if popup:
             self.setAttribute(Qt.WA_TranslucentBackground)
-            self.setCentralWidget(PopupShell(root, self))
+            shell = PopupShell(root, self)
+            self.setCentralWidget(shell)
+            self.fx = CRTOverlay(shell.frame, radius=PopupShell.RADIUS)   # Effekt nur innerhalb der runden Fläche
         else:
             self.setCentralWidget(root)
+            self.fx = CRTOverlay(root)
 
         # --- Statusleiste ---
         self.status = QLabel()
@@ -1653,6 +1680,9 @@ class MainWindow(QMainWindow):
             shell.restyle()
         if hasattr(self, "_ctx_used"):
             self._update_meta()           # Kontext-Balken in der neuen Akzentfarbe
+        if getattr(self, "fx", None) is not None:
+            self.fx.set_active(fx_wanted(self.cfg["settings"], self.colors) == "crt",
+                               tint=self.colors.get("accent"))
         if self.chat is not None:
             self.redraw()
 

@@ -16,6 +16,8 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Modelle werden automatisch vom Server geladen.
 - **Designs**: System (hell/dunkel), Dunkel, Hell, Cyberpunk, Matrix (Monospace-Schrift), Solarized dunkel/hell, Nord,
   Dracula, Gruvbox – unter ⚙ → Design. Jedes Design bringt passende Farben für den Popup-Leuchtrahmen mit.
+- **Hintergrund-Effekt** (⚙ → Hintergrund-Effekt): Röhrenmonitor mit Scanlines, gewölbten Rändern, rollendem
+  Bildwiederhol-Balken und gelegentlichem Flackern – automatisch beim Design Matrix oder immer. Kostet ~1–2 % eines Kerns.
 - **Eingabefeld-Stile** (⚙ → Eingabefeld): Standard, Neon-Glow (umlaufender Farbverlauf, pulsiert, leuchtet beim Senden auf), Minimal-Linie (wächst beim Fokus, Lichtpunkt folgt dem
   Cursor) und Glas (Lichtreflex). Animationen laufen nur, solange das Feld den Fokus hat.
 - **Profile**: pro Vorgang eigener System-Prompt, Temperatur und Werkzeug-Auswahl (`{date}` wird ersetzt).
