@@ -76,7 +76,9 @@ Wer faster-whisper schon anderswo hat (z. B. pyvideotrans), trägt unter ⚙ →
 - **Profil „Alles“**: alle Werkzeuge, das Modell entscheidet selbst. Weitere Werkzeuge: `python_run` (mit Bestätigung)
   und `pc` (Dateien/Programme/URLs öffnen, Zwischenablage, Benachrichtigung, Lautstärke über `wpctl`,
   Medien über MPRIS/`qdbus6`).
-- Chats werden lokal gespeichert (`~/.local/share/spike/chats`).
+- Chats werden lokal gespeichert (`~/.local/share/spike/chats`). Im Verlauf hat jeder Chat ein **⋯**-Menü
+  (auch per Rechtsklick): Umbenennen, Archivieren, Löschen. **🗄 Archiv** unten in der Seitenleiste zeigt archivierte
+  Chats, dort lassen sie sich wiederherstellen.
 
 ## Installation
 

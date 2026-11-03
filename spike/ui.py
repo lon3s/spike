@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QSizePolicy, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QColorDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QMenu, QPlainTextEdit, QProgressBar, QPushButton, QSlider, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
-    QToolButton, QVBoxLayout, QWidget,
+    QStyle, QStyledItemDelegate, QToolButton, QVBoxLayout, QWidget,
 )
 
 from html import escape as html_escape
@@ -1087,6 +1087,46 @@ def popup_bg(s, c):
     return top, bottom, edge
 
 
+class _ChatDelegate(QStyledItemDelegate):
+    """Chat-Eintrag wie gewohnt + ⋯-Knopf rechts (beim angewählten Chat immer, sonst beim Drüberfahren)."""
+    W, H = 30, 24
+
+    def __init__(self, win):
+        super().__init__(win.chat_list)
+        self.win = win
+
+    @classmethod
+    def button_rect(cls, r, view_w):
+        # am sichtbaren rechten Rand – bei langen Titeln meldet die Liste den Eintrag breiter als sichtbar
+        right = min(r.right(), view_w - 1)
+        return QRect(right - cls.W - 5, r.center().y() - cls.H // 2 + 1, cls.W, cls.H)
+
+    def paint(self, p, opt, index):
+        super().paint(p, opt, index)
+        lst = self.win.chat_list
+        it = lst.item(index.row())
+        if it is None:
+            return
+        selected = bool(opt.state & QStyle.State_Selected)
+        hovered = it is self.win._hover_item
+        if not (selected or hovered):
+            return
+        c = self.win.colors
+        b = QRectF(self.button_rect(opt.rect, lst.viewport().width()))
+        hot = hovered and self.win._more_hot
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(c["accent"] if hot else c["border"]), 1))
+        p.setBrush(QColor(c["accent"] if hot else c["panel2"]))
+        p.drawRoundedRect(b.adjusted(0.5, 0.5, -0.5, -0.5), 7, 7)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(c["accent_text"] if hot else c["text"]))
+        cx, cy = b.center().x(), b.center().y()
+        for dx in (-6, 0, 6):               # drei Punkte selbst malen (kein Schriftzeichen nötig)
+            p.drawEllipse(QPointF(cx + dx, cy), 1.7, 1.7)
+        p.restore()
+
+
 class HelpDialog(QDialog):
     """Bedienungsanleitung: alles Wichtige an einem Ort statt in Tooltips."""
     def __init__(self, win):
@@ -1134,6 +1174,14 @@ class HelpDialog(QDialog):
 <li><b>Mittelklick</b> aufs Tray-Symbol – großes Fenster</li>
 <li><b>Rechtsklick</b> aufs Tray-Symbol – Menü (neuer Chat, markierten Text bearbeiten, Hilfe, Beenden)</li>
 <li>Im Popup bringt <b>⤢</b> denselben Chat ins große Fenster.</li>
+</ul>
+
+<h2>Chats verwalten</h2>
+<ul>
+<li>Im großen Fenster links stehen deine Chats. Mit der Maus drüberfahren → <b>⋯</b> (oder Rechtsklick):
+<b>Umbenennen</b>, <b>Archivieren</b>, <b>Löschen</b>.</li>
+<li><b>Archivieren</b> räumt einen Chat aus dem Verlauf, ohne ihn zu löschen. Unten <b>🗄 Archiv</b> zeigt alle
+archivierten Chats; dort holt <b>⋯ → Wiederherstellen</b> ihn zurück.</li>
 </ul>
 
 <h2>Schreiben</h2>
@@ -1300,9 +1348,22 @@ class MainWindow(QMainWindow):
         self.chat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # lange Titel mit „…“ statt Scrollleiste
         self.chat_list.setTextElideMode(Qt.ElideRight)
         self.chat_list.currentItemChanged.connect(self._chat_selected)
-        btn_del = QPushButton("Chat löschen")
-        btn_del.setObjectName("Danger")
-        btn_del.clicked.connect(self.delete_chat)
+        # „⋯“ am Chat: erscheint beim Drüberfahren (und am offenen Chat) → Umbenennen / Archivieren / Löschen
+        self.chat_list.setMouseTracking(True)
+        self.chat_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.chat_list.customContextMenuRequested.connect(
+            lambda pos: self._chat_menu(self.chat_list.itemAt(pos), self.chat_list.viewport().mapToGlobal(pos)))
+        self._hover_item = None
+        self._more_hot = False
+        self.chat_list.setItemDelegate(_ChatDelegate(self))   # malt den ⋯-Knopf direkt in den Eintrag
+        self.chat_list.viewport().setAttribute(Qt.WA_Hover, True)
+        self.chat_list.viewport().installEventFilter(self)
+        self._show_archive = False
+        self.btn_archive = QPushButton("🗄  Archiv")
+        self.btn_archive.setObjectName("ArchiveBtn")
+        self.btn_archive.setCheckable(True)
+        self.btn_archive.setToolTip("Archivierte Chats anzeigen")
+        self.btn_archive.toggled.connect(self._toggle_archive)
         btn_set = QPushButton("⚙  Einstellungen")
         btn_set.clicked.connect(self.open_settings)
         sl = QVBoxLayout(self.side)
@@ -1310,12 +1371,12 @@ class MainWindow(QMainWindow):
         sl.setSpacing(8)
         sl.addWidget(title)
         sl.addWidget(btn_new)
-        hist = QLabel("VERLAUF")
-        hist.setObjectName("Muted")
-        hist.setStyleSheet("font-size: 8.5pt; font-weight: 600; padding: 8px 4px 0 4px;")
-        sl.addWidget(hist)
+        self.hist_label = QLabel("VERLAUF")
+        self.hist_label.setObjectName("Muted")
+        self.hist_label.setStyleSheet("font-size: 8.5pt; font-weight: 600; padding: 8px 4px 0 4px;")
+        sl.addWidget(self.hist_label)
         sl.addWidget(self.chat_list, 1)
-        sl.addWidget(btn_del)
+        sl.addWidget(self.btn_archive)
         sl.addWidget(btn_set)
 
         # --- Kopfzeile ---
@@ -1737,11 +1798,193 @@ class MainWindow(QMainWindow):
     def _load_chat_list(self):
         self.chat_list.blockSignals(True)
         self.chat_list.clear()
-        for c in C.list_chats():
+        self._hover_item = None
+        for c in C.list_chats(archived=self._show_archive):
             it = QListWidgetItem(c["title"])
             it.setData(Qt.UserRole, c["id"])
             self.chat_list.addItem(it)
         self.chat_list.blockSignals(False)
+        self._update_archive_btn()
+        for ms in (0, 150, 600):          # Liste legt ihre Einträge verzögert an → mehrfach nachsehen
+            QTimer.singleShot(ms, self._place_chat_more)
+
+    # --- „⋯“-Menü am Chat und Archiv ---
+    def _update_archive_btn(self):
+        n = len(C.list_chats(archived=True)) if not self._show_archive else self.chat_list.count()
+        self.btn_archive.setText("←  Zurück zum Verlauf" if self._show_archive else f"🗄  Archiv ({n})")
+        self.btn_archive.setToolTip("" if self._show_archive else "Archivierte Chats anzeigen")
+        self.hist_label.setText("ARCHIV" if self._show_archive else "VERLAUF")
+
+    def _toggle_archive(self, on):
+        if self.agent:
+            self.btn_archive.blockSignals(True)
+            self.btn_archive.setChecked(self._show_archive)
+            self.btn_archive.blockSignals(False)
+            return
+        self._show_archive = on
+        self._load_chat_list()
+        cur = self.chat["id"] if self.chat else None
+        for i in range(self.chat_list.count()):
+            if self.chat_list.item(i).data(Qt.UserRole) == cur:
+                self.chat_list.blockSignals(True)
+                self.chat_list.setCurrentRow(i)
+                self.chat_list.blockSignals(False)
+                break
+        else:
+            if self.chat_list.count():
+                self.chat_list.setCurrentRow(0)
+            elif not on:
+                self.new_chat()
+
+    def _place_chat_more(self):
+        """⋯ wird vom Delegate mitgemalt – hier nur neu zeichnen lassen."""
+        if hasattr(self, "chat_list"):
+            self.chat_list.viewport().update()
+
+    def _more_rect(self, it):
+        """Klickfläche des ⋯-Knopfs im Eintrag (Viewport-Koordinaten)."""
+        return _ChatDelegate.button_rect(self.chat_list.visualItemRect(it), self.chat_list.viewport().width())
+
+    def eventFilter(self, obj, e):
+        if hasattr(self, "chat_list") and obj is self.chat_list.viewport():
+            t = e.type()
+            if t == QEvent.MouseMove:
+                pos = e.position().toPoint()
+                it = self.chat_list.itemAt(pos)
+                hot = it is not None and self._more_rect(it).contains(pos)
+                if it is not self._hover_item or hot != self._more_hot:
+                    self._hover_item, self._more_hot = it, hot
+                    obj.setCursor(Qt.PointingHandCursor if hot else Qt.ArrowCursor)
+                    obj.update()
+            elif t == QEvent.Leave:
+                self._hover_item, self._more_hot = None, False
+                obj.unsetCursor()
+                obj.update()
+            elif t in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.MouseButtonRelease) \
+                    and e.button() == Qt.LeftButton:
+                pos = e.position().toPoint()
+                it = self.chat_list.itemAt(pos)
+                on_more = it is not None and self._more_rect(it).contains(pos)
+                if t == QEvent.MouseButtonRelease:
+                    pressed, self._more_pressed = getattr(self, "_more_pressed", None), None
+                    if on_more and pressed is it:
+                        # erst nach dem Loslassen öffnen (wie ein normaler Knopf) – öffnet man beim Drücken,
+                        # schließt das Loslassen neben dem Menü es unter Wayland sofort wieder
+                        g = obj.mapToGlobal(self._more_rect(it).bottomLeft())
+                        QTimer.singleShot(0, lambda it=it, g=g: self._chat_menu(it, g))
+                        return True
+                    if pressed is not None:
+                        return True
+                elif on_more:
+                    self._more_pressed = it
+                    return True          # Klick auf ⋯ wählt den Chat nicht aus
+        return super().eventFilter(obj, e)
+
+    def _chat_menu(self, it, pos):
+        if it is None:
+            return
+        cid = it.data(Qt.UserRole)
+        saved = (C.CHATS_DIR / f"{cid}.json").exists()
+        busy = bool(self.agent) and self.chat is not None and self.chat["id"] == cid
+        m = QMenu(self)
+        a_ren = m.addAction("✏  Umbenennen", lambda: self._chat_rename(it))
+        if self._show_archive:
+            a_arc = m.addAction("↩  Wiederherstellen", lambda: self._chat_archive(it, False))
+        else:
+            a_arc = m.addAction("🗄  Archivieren", lambda: self._chat_archive(it, True))
+        m.addSeparator()
+        a_del = m.addAction("🗑  Löschen …", lambda: self._chat_delete(it))
+        for a in (a_ren, a_arc, a_del):
+            a.setEnabled(saved and not busy)
+        if not saved:
+            a_del.setEnabled(not busy)       # leeren neuen Chat darf man wegwerfen
+        m.exec(pos)
+        self._hover_item = None
+        QTimer.singleShot(0, self._place_chat_more)
+
+    def _chat_rename(self, it):
+        from PySide6.QtWidgets import QInputDialog
+        cid = it.data(Qt.UserRole)
+        title, ok = QInputDialog.getText(self, "Umbenennen", "Neuer Name:", text=it.text())
+        title = " ".join(title.split())[:80]
+        if not ok or not title:
+            return
+        C.update_chat_meta(cid, title=title)
+        it.setText(title)
+        self._apply_meta(cid, title=title)
+        self._sync_other_list()
+
+    def _chat_archive(self, it, archive):
+        cid = it.data(Qt.UserRole)
+        if self.chat is not None and self.chat["id"] == cid and self.chat["messages"]:
+            C.save_chat(self.chat)           # ungespeicherte Änderungen nicht verlieren
+        C.update_chat_meta(cid, archived=True if archive else None)
+        self._apply_meta(cid, archived=True if archive else None)
+        self._remove_list_item(it, open_next=(self.chat is not None and self.chat["id"] == cid))
+        self._update_archive_btn()
+        self._info("🗄 Archiviert – unten „Archiv“ zeigt ihn wieder" if archive else "↩ Wieder im Verlauf")
+        self._sync_other_list()
+
+    def _chat_delete(self, it):
+        cid = it.data(Qt.UserRole)
+        if QMessageBox.question(self, "Löschen", f"Chat „{it.text()}“ endgültig löschen?\n\n"
+                                "Tipp: „Archivieren“ räumt ihn weg, ohne ihn zu löschen.") != QMessageBox.Yes:
+            return
+        C.delete_chat(cid)
+        is_open = self.chat is not None and self.chat["id"] == cid
+        if is_open:
+            self.chat = None
+        if self.ctrl:          # hat das andere Fenster ihn offen → dort frischen Chat, sonst speichert es ihn neu
+            for w in (self.ctrl.main, self.ctrl.popup):
+                if w is not None and w is not self and w.chat is not None and w.chat.get("id") == cid \
+                        and not w.agent:
+                    w.chat = None
+                    w.new_chat()
+        self._remove_list_item(it, open_next=is_open)
+        self._update_archive_btn()
+        self._sync_other_list()
+
+    def _remove_list_item(self, it, open_next):
+        row = self.chat_list.row(it)
+        if row < 0:
+            return
+        self._hover_item = None
+        self.chat_list.blockSignals(True)
+        self.chat_list.takeItem(row)
+        self.chat_list.blockSignals(False)
+        if not open_next:
+            QTimer.singleShot(0, self._place_chat_more)
+            return
+        self.chat = None
+        if self.chat_list.count():
+            nxt = self.chat_list.item(min(row, self.chat_list.count() - 1))
+            self.chat_list.blockSignals(True)
+            self.chat_list.setCurrentItem(nxt)
+            self.chat_list.blockSignals(False)
+            self._chat_selected(nxt, None)        # ausdrücklich öffnen (Liste meldet keinen Wechsel)
+        elif self._show_archive:
+            self.btn_archive.setChecked(False)     # Archiv leer → zurück zum Verlauf
+        else:
+            self.new_chat()
+        QTimer.singleShot(0, self._place_chat_more)
+
+    def _apply_meta(self, cid, **fields):
+        """Titel/Archiv-Status auch im offenen Chat beider Fenster setzen (sonst überschreibt Speichern es)."""
+        wins = [self] + ([w for w in (self.ctrl.main, self.ctrl.popup) if w is not None and w is not self]
+                         if self.ctrl else [])
+        for w in wins:
+            if w.chat is not None and w.chat.get("id") == cid:
+                for k, v in fields.items():
+                    if v is None:
+                        w.chat.pop(k, None)
+                    else:
+                        w.chat[k] = v
+
+    def _sync_other_list(self):
+        if self.ctrl:
+            for w in (self.ctrl.main, self.ctrl.popup):
+                if w is not None and w is not self:
+                    w._load_chat_list_keep()
 
     def new_chat(self):
         if self.agent:
@@ -1749,6 +1992,12 @@ class MainWindow(QMainWindow):
         if self.chat is not None and not self.chat["messages"]:
             self.input.setFocus()   # leerer Chat existiert schon
             return
+        if self._show_archive:
+            self.btn_archive.blockSignals(True)
+            self.btn_archive.setChecked(False)
+            self.btn_archive.blockSignals(False)
+            self._show_archive = False
+            self._load_chat_list()
         self.chat = C.new_chat(self.cb_ep.currentText(), self.model_id(), self.cb_profile.currentText())
         it = QListWidgetItem(self.chat["title"])
         it.setData(Qt.UserRole, self.chat["id"])
@@ -1783,15 +2032,8 @@ class MainWindow(QMainWindow):
 
     def delete_chat(self):
         it = self.chat_list.currentItem()
-        if not it or self.agent:
-            return
-        if QMessageBox.question(self, "Löschen", f"Chat „{it.text()}“ löschen?") != QMessageBox.Yes:
-            return
-        C.delete_chat(it.data(Qt.UserRole))
-        self.chat = None
-        self.chat_list.takeItem(self.chat_list.row(it))
-        if self.chat_list.count() == 0:
-            self.new_chat()
+        if it and not self.agent:
+            self._chat_delete(it)
 
     # --- Senden ---
     # --- Markierten Text bearbeiten (spike --text) ---
@@ -2741,6 +2983,7 @@ class MainWindow(QMainWindow):
     def showEvent(self, e):
         self._was_active = False
         super().showEvent(e)
+        QTimer.singleShot(0, self._place_chat_more)
 
     def hideEvent(self, e):
         self._hidden_at = time.monotonic()

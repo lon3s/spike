@@ -173,16 +173,33 @@ def new_chat(endpoint="", model="", profile="") -> dict:
     }
 
 
-def list_chats() -> list[dict]:
+def list_chats(archived: bool = False) -> list[dict]:
+    """Chats, neueste zuerst. archived=True liefert nur das Archiv, sonst nur die aktiven."""
     CHATS_DIR.mkdir(parents=True, exist_ok=True)
     out = []
     for f in sorted(CHATS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             d = json.loads(f.read_text("utf-8"))
-            out.append({"id": d["id"], "title": d.get("title", d["id"])})
+            if bool(d.get("archived")) == archived:
+                out.append({"id": d["id"], "title": d.get("title", d["id"])})
         except Exception:
             pass
     return out
+
+
+def update_chat_meta(chat_id: str, **fields) -> dict:
+    """Titel/Archiv-Status ändern, ohne die Reihenfolge (Änderungszeit) zu verschieben."""
+    f = CHATS_DIR / f"{chat_id}.json"
+    st = f.stat()
+    d = json.loads(f.read_text("utf-8"))
+    for k, v in fields.items():
+        if v is None:
+            d.pop(k, None)
+        else:
+            d[k] = v
+    save_chat(d)
+    os.utime(f, (st.st_atime, st.st_mtime))
+    return d
 
 
 def load_chat(chat_id: str) -> dict:

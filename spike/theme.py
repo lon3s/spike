@@ -66,7 +66,11 @@ def qss(c) -> str:
     QTextBrowser#Chat {{ background: {c['bg']}; border: none; }}
     QPlainTextEdit#Input {{ background: transparent; border: none; padding: 4px; }}
     QListWidget#Chats {{ background: transparent; border: none; outline: none; }}
-    QListWidget#Chats::item {{ padding: 8px 10px; border-radius: 8px; margin: 1px 0; color: {c['muted']}; }}
+    QListWidget#Chats::item {{ padding: 8px 38px 8px 10px; border-radius: 8px; margin: 1px 0; color: {c['muted']}; }}
+    QPushButton#ArchiveBtn {{ background: transparent; border: 1px solid transparent; color: {c['muted']};
+                             text-align: left; padding: 6px 10px; }}
+    QPushButton#ArchiveBtn:hover {{ background: {c['panel2']}; color: {c['text']}; }}
+    QPushButton#ArchiveBtn:checked {{ background: {c['sel']}; color: {c['text']}; }}
     QListWidget#Chats::item:hover {{ background: {c['panel2']}; color: {c['text']}; }}
     QListWidget#Chats::item:selected {{ background: {c['sel']}; color: {c['text']}; }}
     QPushButton {{ background: {c['panel2']}; border: 1px solid {c['border']}; border-radius: 10px;
