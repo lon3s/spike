@@ -98,6 +98,15 @@ def lan_ips() -> list[str]:
     return ips or ["127.0.0.1"]
 
 
+def is_tailscale(ip: str) -> bool:
+    """Tailscale vergibt Adressen aus 100.64.0.0/10."""
+    try:
+        a, b = (int(x) for x in ip.split(".")[:2])
+    except ValueError:
+        return False
+    return a == 100 and 64 <= b < 128
+
+
 def ensure_cert() -> tuple[Path, Path] | None:
     """Selbst signiertes Zertifikat (10 Jahre) für alle aktuellen IPs. Neu, wenn eine IP fehlt."""
     crt, key = WEB_DIR / "cert.pem", WEB_DIR / "key.pem"
@@ -261,8 +270,18 @@ class WebApp:
             self.httpd = None
         self.hub.bump()
 
-    def link(self) -> str:
-        return f"{self.url}/?t={load_state()['token']}" if self.url else ""
+    def link(self, ip: str = "") -> str:
+        if not self.url:
+            return ""
+        base = self.url if not ip else f"{self.url.split('://')[0]}://{ip}:{self.url.rsplit(':', 1)[1]}"
+        return f"{base}/?t={load_state()['token']}"
+
+    def refresh_ips(self):
+        """Neue Adresse (z. B. Tailscale gerade eingeschaltet)? Dann Zertifikat erneuern und Server neu starten."""
+        if self.httpd and self.url.startswith("https") and \
+                not set(lan_ips()) <= set(load_state().get("cert_ips") or []):
+            key, self._key = self._key, None
+            self.apply({"web_enabled": key[0], "web_port": key[1], "web_https": key[2]})
 
     # --- Konfiguration / Auswahl ---
     def _cfg(self):

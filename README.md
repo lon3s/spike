@@ -197,9 +197,26 @@ wechseln, Freigaben (Ja / Immer / Nein oder „stattdessen …“ schreiben), Li
 anhängen, Mikro gedrückt halten (Whisper auf dem PC), Antworten vorlesen (Piper vom PC, sonst die Stimme des Handys).
 Erinnerungen und „wartet auf Freigabe“ erscheinen als Meldung, solange die Seite offen ist.
 
+### Unterwegs mit Tailscale
+
+[Tailscale](https://tailscale.com) verbindet PC und Handy über ein privates, verschlüsseltes Netz – spike ist dann
+auch im Mobilfunk erreichbar, ohne Portfreigabe am Router (für private Nutzung kostenlos). Die Anleitung steht auch
+in ⚙ → Handy → „Unterwegs mit Tailscale“.
+
+1. PC: `sudo pacman -S tailscale` (andere Distros: `curl -fsSL https://tailscale.com/install.sh | sh`), dann
+   `sudo systemctl enable --now tailscaled` und `sudo tailscale up` (Link öffnen, anmelden).
+2. Handy: App *Tailscale* installieren, mit demselben Konto anmelden, VPN an.
+3. Mit ufw: `sudo ufw allow in on tailscale0 to any port 8765 proto tcp`.
+4. ⚙ → Handy neu öffnen und im Auswahlfeld **„Unterwegs – Tailscale“** wählen. spike erneuert dafür das Zertifikat
+   automatisch. Diesen QR-Code scannen – der Link funktioniert zu Hause und unterwegs.
+
+Optional ohne Zertifikatswarnung: In der Tailscale-Verwaltung unter DNS „MagicDNS“ und „HTTPS Certificates“
+einschalten, dann `sudo tailscale serve --bg https+insecure://localhost:8765`. spike ist danach unter
+`https://<pc-name>.<dein-netz>.ts.net` mit gültigem Zertifikat erreichbar (Schlüssel beim ersten Öffnen eintippen).
+
 Sicherheit: Zugang nur mit Schlüssel (steckt im Link/QR-Code, ⚙ → Handy → „Neuen Schlüssel erzeugen“ sperrt alte
 Handys aus). **Den Port nie ins Internet freigeben** – spike kann Befehle auf dem PC ausführen. Für unterwegs ein VPN
-wie WireGuard oder Tailscale nehmen. Mit Firewall (z. B. ufw) muss der Port im Heimnetz frei sein:
+wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Heimnetz frei sein:
 `sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp`.
 
 ## Bedienung
