@@ -21,14 +21,15 @@ THEMES = {
         "danger": "#c9444a", "sel": "#e3dfff", "label": "Hell", "dark": False, "popup": "#ececef",
     },
     # Optionale Schlüssel: label (Anzeigename), dark (Schatten/Popup), popup (Popup-Fläche „grau“),
-    # user_text (Schrift in der eigenen Sprechblase), font (Schriftfamilie), glow (Farben für den Popup-Rahmen)
+    # user_text (Schrift in der eigenen Sprechblase), font (Schriftfamilie), glow (Farben für den Popup-Rahmen),
+    # input (passender Stil der Eingabeleiste, wird beim Wählen im Dialog vorgeschlagen)
     "cyberpunk": {
         "name": "cyberpunk", "label": "Cyberpunk", "dark": True,
         "bg": "#0b0218", "panel": "#140630", "panel2": "#1e0b44", "border": "#3d1a6e",
         "text": "#f3e8ff", "muted": "#9d86cf", "accent": "#ff2a6d", "accent_hover": "#ff5289",
         "accent_text": "#ffffff", "user": "#3a0f45", "user_top": "#ff2a6d", "user_bottom": "#7a1fa8",
         "user_code": "#5a0f7a", "code": "#07010f", "chip": "#180838", "danger": "#ff4d4d", "sel": "#3b1160",
-        "popup": "#12052a", "glow": ["#ff2a6d", "#05d9e8", "#d1f7ff"],
+        "popup": "#12052a", "glow": ["#ff2a6d", "#05d9e8", "#d1f7ff"], "input": "neon",
     },
     "matrix": {
         "name": "matrix", "label": "Matrix", "dark": True,
@@ -38,7 +39,7 @@ THEMES = {
         "user_code": "#022a0c", "code": "#000400", "chip": "#03170a", "danger": "#ff5050", "sel": "#073814",
         "popup": "#010e03", "user_text": "#d4ffdc",
         "font": "'JetBrains Mono', 'Fira Code', 'Hack', 'DejaVu Sans Mono', monospace",
-        "glow": ["#00ff41", "#008f11", "#b8ffc4"],
+        "glow": ["#00ff41", "#008f11", "#b8ffc4"], "input": "terminal",
     },
     "solarized": {
         "name": "solarized", "label": "Solarized dunkel", "dark": True,

@@ -23,6 +23,7 @@ from . import config as C
 from .agent import Agent
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
+from .composer import STYLES as INPUT_STYLES, Composer
 from .theme import THEMES, is_dark, palette, qss
 from . import attachments as A, mcp, memory, plugins, scheduler as S, speech
 from . import tools as T
@@ -39,6 +40,58 @@ class InputBox(QPlainTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.document().contentsChanged.connect(self._fit)
         self._fit()
+        # Terminal-Stil: eigener Block-Cursor █, der blinkt (beim Tippen kurz dauerhaft an)
+        self.block_cursor = False
+        self.cursor_color = ""
+        self._blink_on = True
+        self._blink = QTimer(self)
+        self._blink.setInterval(530)
+        self._blink.timeout.connect(self._toggle_blink)
+        self.cursorPositionChanged.connect(self._cursor_moved)
+
+    def _toggle_blink(self):
+        self._blink_on = not self._blink_on
+        self.viewport().update()
+
+    def _cursor_moved(self):
+        if self.block_cursor:
+            self._blink_on = True
+            self._blink.start()           # Takt neu starten → beim Tippen kein Flackern
+            self.viewport().update()
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        if self.block_cursor:
+            self._cursor_moved()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self._blink.stop()
+        self.viewport().update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self.block_cursor:
+            return
+        r = self.cursorRect()
+        fm = self.fontMetrics()
+        cur = self.textCursor()
+        ch = self.document().characterAt(cur.position())
+        w = fm.horizontalAdvance(ch if ch and ch.isprintable() and ch not in "\u2029\n" else "M")
+        box = QRectF(r.left(), r.top() + 1, max(7, w), r.height() - 2)
+        p = QPainter(self.viewport())
+        col = QColor(self.cursor_color or "#7ee787")
+        if self.hasFocus() and self._blink_on:
+            col.setAlpha(190)
+            p.fillRect(box, col)
+            if ch and ch.isprintable():   # Zeichen unter dem Cursor bleibt lesbar
+                p.setPen(QColor("#0b0d10"))
+                p.drawText(box, Qt.AlignLeft | Qt.AlignVCenter, ch)
+        elif not self.hasFocus():
+            col.setAlpha(120)
+            p.setPen(QPen(col, 1))
+            p.drawRect(box.adjusted(0.5, 0.5, -0.5, -0.5))
+        p.end()
 
     def _fit(self):
         lines = max(1, int(self.document().size().height()))
@@ -389,6 +442,11 @@ class SettingsDialog(QDialog):
             self.cb_theme.addItem(t.get("label", key), key)
         self.cb_theme.setCurrentIndex(max(0, self.cb_theme.findData(s.get("theme", "system"))))
         f.addRow("Design", self.cb_theme)
+        self.cb_input = QComboBox()
+        for key, label in INPUT_STYLES:
+            self.cb_input.addItem(label, key)
+        self.cb_input.setCurrentIndex(max(0, self.cb_input.findData(s.get("input_style", "standard"))))
+        f.addRow("Eingabefeld", self.cb_input)
         f.addRow("Max. Zeichen pro Werkzeug-Ausgabe", self.sp_out)
         f.addRow("Letzte N Werkzeug-Ausgaben voll behalten", self.sp_keep)
         f.addRow("Ältere Werkzeug-Ausgaben kürzen auf (Zeichen)", self.sp_old)
@@ -884,6 +942,8 @@ class SettingsDialog(QDialog):
         if t.get("glow"):
             self.glow_colors = list(t["glow"])
             self._glow_buttons()
+        if t.get("input"):                # z. B. Matrix → Terminal-Eingabe (danach frei änderbar)
+            self.cb_input.setCurrentIndex(max(0, self.cb_input.findData(t["input"])))
 
     def result_config(self):
         s = self.cfg["settings"]
@@ -891,7 +951,7 @@ class SettingsDialog(QDialog):
                  old_tool_result_chars=self.sp_old.value(), max_steps=self.sp_steps.value(),
                  default_n_ctx=self.sp_ctx.value(), browser_headless=self.cb_head.isChecked(),
                  drive_index=self.cb_index.isChecked(),
-                 theme=self.cb_theme.currentData(),
+                 theme=self.cb_theme.currentData(), input_style=self.cb_input.currentData(),
                  popup_glow=self.cb_glow.isChecked(), popup_glow_style=self.cb_glow_style.currentData(),
                  popup_glow_colors=list(self.glow_colors), popup_glow_speed=self.sp_glow_speed.value(),
                  popup_glow_width=self.sp_glow_width.value(),
@@ -1450,8 +1510,7 @@ class MainWindow(QMainWindow):
         self.btn_compact = _icon_btn("⤢", "Kompakt-Modus beenden (Strg+K)", self.toggle_compact)
         self.btn_compact.hide()
 
-        composer = QWidget()
-        composer.setObjectName("Composer")
+        composer = Composer()
         composer.setMaximumWidth(ChatView.MAX_W)
         self.composer = composer
         cl = QHBoxLayout(composer)
@@ -1471,7 +1530,9 @@ class MainWindow(QMainWindow):
         # sonst wird die Leiste höher und der Senden-Knopf sitzt nicht mittig
         for b in (self.btn_compact, self.btn_pin):
             b.setFixedSize(36, 36)
+        cl.addWidget(composer.prompt, 0, Qt.AlignTop)
         cl.addWidget(self.input, 1)
+        composer.attach(self.input)
         self.btn_mic = _icon_btn("🎤", "Sprechen (Strg+M): klicken, reden, nochmal klicken", self.toggle_record)
         self.btn_mic.setFixedSize(36, 36)
         cl.addWidget(self.btn_mic, 0, Qt.AlignBottom)
@@ -1626,7 +1687,13 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.setPalette(palette(self.colors))
         app.setStyleSheet(qss(self.colors))
-        shadow(self.composer, self.colors, blur=28, dy=6)
+        style = self.cfg["settings"].get("input_style", "standard")
+        self.composer.set_style(style, self.colors, compact=self.popup)
+        if style in ("neon", "linie"):    # leuchtet bzw. hat keine Fläche → kein Schatten
+            self.composer.setGraphicsEffect(None)
+        else:
+            shadow(self.composer, self.colors, blur=28 if style != "glas" else 20, dy=6,
+                   strength=1.0 if style != "glas" else 0.6)
         shell = self.centralWidget()
         if isinstance(shell, PopupShell):
             shell.restyle()
@@ -2463,6 +2530,7 @@ class MainWindow(QMainWindow):
             return
         self._sync_chat_settings()
         self.input.clear()
+        self.composer.kick(1.5)           # Senden: Eingabeleiste leuchtet kurz auf (animierte Stile)
         self.chat["messages"].append(self._user_message(text))
         if self.chat["title"] == "Neuer Chat":
             self.chat["title"] = text.replace("\n", " ")[:45]
