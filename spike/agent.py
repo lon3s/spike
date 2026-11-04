@@ -25,9 +25,12 @@ def list_first(gen):
 
 
 MEMORY_HOWTO = (
-    "Wenn der Nutzer dir etwas Dauerhaftes über sich, seine Vorlieben oder seine Systeme mitteilt oder "
-    "„merk dir …“ sagt, speichere es knapp mit memory_save. Fehlt dir Wissen über den Nutzer, suche mit "
-    "memory_search. Erwähne das Gedächtnis nur, wenn es passt."
+    "Gedächtnis: Teilt der Nutzer etwas Dauerhaftes über sich mit (Name, Wohnort, Webseiten, feste Vorlieben, "
+    "seine Geräte) oder sagt „merk dir …“, speichere es knapp mit memory_save(kind=\"user\"). Ergebnisse oder "
+    "Details einer Aufgabe (Ordner, Dateien, was erledigt ist) nur als Arbeitsnotiz: memory_save(kind=\"note\") – "
+    "die erscheint nicht automatisch in neuen Chats. Ein neuer Chat ist ein frischer Start: beziehe dich nicht von "
+    "selbst auf frühere Aufgaben. Nur wenn der Nutzer an etwas Früheres anknüpft, suche mit memory_search "
+    "(genaue Stichworte). Erwähne das Gedächtnis nur, wenn es passt."
 )
 
 ASK_HOWTO = (
@@ -35,6 +38,16 @@ ASK_HOWTO = (
     "Möglichkeiten vor (multi=true, wenn mehrere zusammen passen; das steht dann schon auf der Karte). Frag nur, "
     "wenn es wirklich nötig ist – Einfaches entscheidest du selbst."
 )
+
+
+# Freigabe-Modi: wann der Nutzer vor einer Aktion (Befehl, Datei ändern, Python …) gefragt wird
+PERM_MODES = [
+    ("fragen", "🛡 Immer fragen", "Vor jedem Befehl und jeder Änderung nachfragen"),
+    ("dateien", "✎ Dateien automatisch", "Dateien schreiben/ändern ohne Rückfrage, Befehle weiter fragen"),
+    ("alles", "⚡ Yolo", "Alles ohne Rückfrage ausführen – Vorsicht!"),
+    ("lesen", "👁 Nur lesen", "Nichts ausführen oder ändern, nur lesen und vorschlagen"),
+]
+PERM_LABEL = {k: l for k, l, _ in PERM_MODES}
 
 
 class Agent(QObject):
@@ -45,6 +58,7 @@ class Agent(QObject):
     error = Signal(str)
     info = Signal(str)
     confirm_request = Signal(str)
+    inbox_taken = Signal()               # nachgereichte Nachricht(en) aus der Warteschlange übernommen
     finished = Signal()
 
     def __init__(self, chat, endpoint, model, profile, settings, toolbox, n_ctx):
@@ -63,7 +77,9 @@ class Agent(QObject):
         self.auto_deny = False    # geplante Aufgaben: niemand da zum Bestätigen → automatisch ablehnen
         self._remember = False
         self._reason = ""
+        self._note = ""           # automatische Ablehnung (Nur-Lesen, geplante Aufgabe) – Hinweis fürs Modell
         self._ask_reply = None    # Antwort auf eine Rückfrage: {"choices": [...], "text": "..."}
+        self.take_inbox = None    # Callback: liefert eine nachgereichte Nutzer-Nachricht (Warteschlange) oder None
 
     # --- Steuerung ---
     def start(self):
@@ -169,12 +185,20 @@ class Agent(QObject):
         if self.stopped:
             return False
         key = self._allow_key()
-        if key and key in self.chat.get("allow", []):
-            return True
+        mode = self.settings.get("perm_mode", "fragen")
+        if mode == "lesen":
+            self._note = ("Nur-Lesen-Modus ist aktiv – Ausführen und Ändern ist gesperrt. Beschreibe stattdessen, "
+                          "was du tun würdest (Befehl/Änderung), damit der Nutzer es selbst machen oder den "
+                          "Modus wechseln kann.")
+            return False
         if self.auto_deny:
-            self._reason = ("Geplante Aufgabe – der Nutzer ist nicht da und kann nichts freigeben. Erledige es "
+            self._note = ("Geplante Aufgabe – der Nutzer ist nicht da und kann nichts freigeben. Erledige es "
                             "ohne diese Aktion oder beschreibe, was er selbst tun soll.")
             return False
+        if mode == "alles" or (mode == "dateien" and self._cur[0] in ("write_file", "edit_file")):
+            return True
+        if key and key in self.chat.get("allow", []):
+            return True
         short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
                  {"pc:open": "Öffnen", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
                   "python_run": "Python"}.get(key, key[:18]))
@@ -288,6 +312,12 @@ class Agent(QObject):
                 self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)), self.vision)
 
         for step in range(int(s.get("max_steps", 15))):
+            if step and self.take_inbox and not self.stopped:
+                extra = self.take_inbox()       # während der Arbeit nachgeschriebene Nachricht → jetzt mitgeben
+                if extra:
+                    msgs.append(extra)
+                    self.inbox_taken.emit()
+                    self._tick(force=True)
             payload, dropped = payload_now()
             if self.n_ctx and s.get("auto_compact", True) and not self.stopped:
                 limit = budget(self.n_ctx, max_tokens) * int(s.get("compact_at_percent", 70)) / 100
@@ -386,7 +416,7 @@ class Agent(QObject):
                         if not isinstance(args, dict):
                             raise ValueError
                         self.info.emit(f"🔧 {name} läuft …")
-                        self._cur, self._reason = (name, args), ""
+                        self._cur, self._reason, self._note = (name, args), "", ""
                         self.toolbox.last_diff = ""
                         self.toolbox.last_undo = None
                         self.live_tool = {"id": c["id"], "out": ""}
@@ -401,7 +431,9 @@ class Agent(QObject):
                         finally:
                             self.toolbox.on_output = None
                             self.live_tool = None
-                        if self._reason and result.startswith("Vom Nutzer abgelehnt"):
+                        if self._note and result.startswith("Vom Nutzer abgelehnt"):
+                            result = f"Nicht ausgeführt. {self._note}"
+                        elif self._reason and result.startswith("Vom Nutzer abgelehnt"):
                             result = f"Vom Nutzer abgelehnt. Er schreibt dazu: {self._reason}"
                     except (json.JSONDecodeError, ValueError):
                         result = "Fehler: Argumente sind kein gültiges JSON-Objekt."

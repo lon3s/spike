@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QMargins, QObject, Qt, Signal
+from PySide6.QtCore import QMargins, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
@@ -91,6 +91,8 @@ class Controller:
         self.web = WebApp(self.browser, self)
         self.web.apply(C.load_config()["settings"])
         app.aboutToQuit.connect(self.web.stop)
+        # Popup schon kurz nach dem Start unsichtbar vorbereiten – sonst dauert der erste Klick ~1,5 s
+        QTimer.singleShot(2500, self._ensure_popup)
 
     # --- Handy: Abgleich mit den Fenstern (Aufrufe kommen aus Hintergrund-Threads) ---
     def busy(self, chat_id):
@@ -158,12 +160,32 @@ class Controller:
             return
         if time.monotonic() - p._hidden_at < 0.35:   # Klick aufs Tray hat das Popup gerade geschlossen
             return
+        self._follow_main()
         self._place_popup()
         p.show()
         p.raise_()
         p.activateWindow()
         p.redraw(force_bottom=True)
         p.input.setFocus()
+
+    def _follow_main(self):
+        """Wurde zuletzt im großen Fenster gearbeitet (offen oder schon geschlossen), macht das Popup mit
+        demselben Chat weiter – wie umgekehrt beim Öffnen des Fensters aus dem Popup."""
+        from . import config as C
+        m, p = self.main, self.popup
+        if m is None or m.chat is None or p.agent:
+            return
+        if not m.isVisible() and m._used_at <= p._used_at:
+            return                          # zuletzt war das Popup dran → seinen Chat behalten
+        if p.chat is not None and p.chat.get("id") == m.chat.get("id"):
+            return
+        if not m.chat["messages"]:          # leerer neuer Chat im Fenster → im Popup auch frisch anfangen
+            if p.chat is None or p.chat["messages"]:
+                p.chat = None
+                p.new_chat()
+            return
+        C.save_chat(m.chat)                 # neuesten Stand sichern, damit das Popup ihn findet und lädt
+        p.select_chat(m.chat["id"])
 
     def new_chat_popup(self):
         self._ensure_popup()

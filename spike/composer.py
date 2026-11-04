@@ -81,9 +81,12 @@ class Composer(QWidget):
                 self.timer.start()
         self.update()
 
+    IDLE_AFTER = 4.0      # so lange nach Fokus/Tippen läuft die Animation, danach steht sie (spart CPU)
+
     def _frame(self):
         now = time.monotonic()
-        busy = (self._focus or now - self._focus_t < 0.5 or self._cur_energy() > 0.02
+        recent = now - max(self._focus_t, self._energy_t) < self.IDLE_AFTER
+        busy = ((self._focus and recent) or now - self._focus_t < 0.5 or self._cur_energy() > 0.02
                 or now - self._sheen_t < 1.4)
         if not busy or not self.isVisible():
             self.timer.stop()
@@ -100,7 +103,10 @@ class Composer(QWidget):
         lay = self.layout()
         pad = {"neon": 3, "glas": 2}.get(self.style_name, 0)
         if lay is not None:
-            lay.setContentsMargins(10 + pad, 6 + pad, 10 + pad, 6 + pad)
+            if compact:
+                lay.setContentsMargins(10 + pad, 6 + pad, 10 + pad, 6 + pad)
+            else:           # großes Fenster: Karte mit Text oben und Chip-Reihe unten – mehr Luft
+                lay.setContentsMargins(16 + pad, 12 + pad, 12 + pad, 10 + pad)
         self.timer.stop()
         self._wake()
 

@@ -1,5 +1,6 @@
 """Qt-Oberfläche."""
 import copy
+import datetime
 import html
 import os
 from pathlib import Path
@@ -8,8 +9,8 @@ import threading
 import time
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QAction, QColor, QConicalGradient, QDesktopServices, QKeySequence, QLinearGradient, QPainter,
-                           QPainterPath, QPalette, QPen, QRegion)
+from PySide6.QtGui import (QAction, QColor, QFont, QConicalGradient, QDesktopServices, QKeySequence, QLinearGradient, QPainter,
+                           QPainterPath, QPalette, QPen, QPixmap, QRegion)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QSizePolicy, QDialog, QFrame, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QColorDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -20,12 +21,12 @@ from PySide6.QtWidgets import (
 from html import escape as html_escape
 
 from . import config as C
-from .agent import Agent
+from .agent import Agent, PERM_MODES, PERM_LABEL
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
 from .composer import STYLES as INPUT_STYLES, Composer
-from .fx import FX, CRTOverlay, TextFlicker, wanted as fx_wanted
-from .theme import THEMES, is_dark, palette, qss
+from .fx import FX, CRTOverlay, KnotOverlay, wanted as fx_wanted
+from .theme import THEMES, UI_FONTS, is_dark, palette, qss
 from . import attachments as A, mcp, memory, plugins, scheduler as S, speech
 from . import tools as T
 from .tools import Browser, ToolBox, all_tools, load_plugins
@@ -422,7 +423,7 @@ class SettingsDialog(QDialog):
         self.cb_fx = QComboBox()
         for key, label in FX:
             self.cb_fx.addItem(label, key)
-        self.cb_fx.setCurrentIndex(max(0, self.cb_fx.findData(s.get("bg_fx", "auto"))))
+        self.cb_fx.setCurrentIndex(max(0, self.cb_fx.findData(fx_wanted(s, None) or "aus")))
         f.addRow("Hintergrund-Effekt", self.cb_fx)
         f.addRow("Max. Zeichen pro Werkzeug-Ausgabe", self.sp_out)
         f.addRow("Letzte N Werkzeug-Ausgaben voll behalten", self.sp_keep)
@@ -671,13 +672,14 @@ class SettingsDialog(QDialog):
         self.sp_pyto.setValue(int(s.get("python_timeout", 120)))
         f.addRow("Zeitlimit für Python", self.sp_pyto)
 
-        lay.addWidget(QLabel("<b>Einträge</b> (Änderungen gelten sofort) – 📌 = immer im Prompt"))
+        lay.addWidget(QLabel("<b>Einträge</b> (Änderungen gelten sofort) – 📌 Über dich = immer bekannt · "
+                             "🗂 Arbeitsnotiz = nur, wenn du daran anknüpfst"))
         self.mem_list = QListWidget()
         self.mem_list.itemDoubleClicked.connect(lambda _: self._mem_edit())
         lay.addWidget(self.mem_list, 1)
         row = QHBoxLayout()
         for text, slot in (("+ Neu", self._mem_add), ("Bearbeiten", self._mem_edit),
-                           ("📌 Anheften", self._mem_pin), ("Löschen", self._mem_del)):
+                           ("📌/🗂 Umschalten", self._mem_pin), ("Löschen", self._mem_del)):
             b = QPushButton(text)
             b.clicked.connect(slot)
             row.addWidget(b)
@@ -692,7 +694,7 @@ class SettingsDialog(QDialog):
         self.mem_list.clear()
         items = memory.load()
         for m in items:
-            it = QListWidgetItem(("📌 " if m.get("pinned") else "") + m["text"])
+            it = QListWidgetItem(("📌 " if memory.is_always(m) else "🗂 ") + m["text"])
             it.setData(Qt.UserRole, m["id"])
             it.setToolTip(f"id {m['id']}")
             self.mem_list.addItem(it)
@@ -729,7 +731,7 @@ class SettingsDialog(QDialog):
         if mid:
             m = next((m for m in memory.load() if m["id"] == mid), None)
             if m:
-                memory.set_pinned(mid, not m.get("pinned"))
+                memory.set_kind(mid, "note" if memory.is_always(m) else "user")
                 self._mem_fill()
 
     def _mem_del(self):
@@ -948,7 +950,7 @@ class SettingsDialog(QDialog):
 
 class GlowOverlay(QWidget):
     """Leuchtrahmen über dem Popup: Licht läuft im Uhrzeigersinn um den runden Rahmen."""
-    FPS = 40
+    FPS = 30
 
     def __init__(self, shell):
         super().__init__(shell)
@@ -969,13 +971,28 @@ class GlowOverlay(QWidget):
         on = bool(self.settings().get("popup_glow", True)) and self.window().isVisible()
         if on and not self._timer.isActive():
             self._last = time.monotonic()
+            self._active_until = time.monotonic() + self.IDLE_AFTER
             self._timer.start()
         elif not on and self._timer.isActive():
             self._timer.stop()
         self.update()
 
+    IDLE_AFTER = 6.0     # Sekunden ohne Aktivität, dann bleibt der Rahmen stehen (spart CPU)
+
+    def poke(self):
+        """Aktivität (Öffnen, Tippen, Antwort läuft): Rahmen dreht wieder."""
+        self._active_until = time.monotonic() + self.IDLE_AFTER
+        if bool(self.settings().get("popup_glow", True)) and self.window().isVisible() \
+                and not self._timer.isActive():
+            self._last = time.monotonic()
+            self._timer.start()
+
     def _tick(self):
         now = time.monotonic()
+        win = self.shell.win
+        if now > getattr(self, "_active_until", 0) and not win.agent:
+            self._timer.stop()          # steht still, bis wieder etwas passiert
+            return
         dt, self._last = min(now - self._last, 0.2), now
         period = max(0.3, float(self.settings().get("popup_glow_speed", 4.0)))
         # QConicalGradient zählt gegen den Uhrzeigersinn → Winkel verringern = Uhrzeigersinn
@@ -1073,7 +1090,25 @@ class PopupShell(QWidget):
         super().hideEvent(e)
 
     def paintEvent(self, e):
+        # Schatten + Fläche einmal als Bild vorbereiten; der Leuchtrahmen lässt diesen Bereich 30× pro Sekunde
+        # neu malen – 18 Schatten-Ringe jedes Mal neu zu zeichnen kostete spürbar CPU
+        top, bottom, edge = popup_bg(self.win.cfg["settings"], self.win.colors)
+        dpr = self.devicePixelRatioF()
+        key = (self.size().width(), self.size().height(), self.frame.geometry().getRect(), is_dark(self.win.colors),
+               top.rgba(), bottom.rgba(), edge.rgba() if edge else None, dpr)
+        if getattr(self, "_bg_key", None) != key:
+            pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.transparent)
+            self._paint_bg(pm)
+            self._bg_pm, self._bg_key = pm, key
         p = QPainter(self)
+        p.setClipRect(e.rect())
+        p.drawPixmap(0, 0, self._bg_pm)
+        p.end()
+
+    def _paint_bg(self, dev):
+        p = QPainter(dev)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
         dark = is_dark(self.win.colors)
@@ -1145,6 +1180,44 @@ def popup_bg(s, c):
     return top, bottom, edge
 
 
+def _user_name(settings):
+    """Vorname für die Begrüßung: Einstellung user_name, sonst aus dem Benutzerkonto."""
+    if settings.get("user_name"):
+        return settings["user_name"]
+    try:
+        import pwd
+        e = pwd.getpwuid(os.getuid())
+        full = (e.pw_gecos or "").split(",")[0].strip()
+        return (full.split()[0] if full else e.pw_name).capitalize()
+    except Exception:
+        return ""
+
+
+_MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
+           "November", "Dezember"]
+
+
+def _day_group(ts):
+    d = datetime.date.fromtimestamp(ts)
+    days = (datetime.date.today() - d).days
+    if days <= 0:
+        return "Heute"
+    if days == 1:
+        return "Gestern"
+    if days < 7:
+        return "Letzte 7 Tage"
+    if days < 30:
+        return "Letzte 30 Tage"
+    return f"{_MONATE[d.month - 1]} {d.year}"
+
+
+def _group_item(label):
+    it = QListWidgetItem(label)
+    it.setFlags(Qt.NoItemFlags)
+    it.setData(Qt.UserRole + 1, label)
+    return it
+
+
 class _ChatDelegate(QStyledItemDelegate):
     """Chat-Eintrag wie gewohnt + ⋯-Knopf rechts (beim angewählten Chat immer, sonst beim Drüberfahren)."""
     W, H = 30, 24
@@ -1159,10 +1232,27 @@ class _ChatDelegate(QStyledItemDelegate):
         right = min(r.right(), view_w - 1)
         return QRect(right - cls.W - 5, r.center().y() - cls.H // 2 + 1, cls.W, cls.H)
 
+    def sizeHint(self, opt, index):
+        sz = super().sizeHint(opt, index)
+        it = self.win.chat_list.item(index.row())
+        if it is not None and not it.data(Qt.UserRole):
+            return QSize(sz.width(), 30)
+        return sz
+
     def paint(self, p, opt, index):
-        super().paint(p, opt, index)
         lst = self.win.chat_list
         it = lst.item(index.row())
+        if it is not None and not it.data(Qt.UserRole):      # Gruppen-Überschrift (Heute, Gestern …)
+            p.save()
+            f = p.font()
+            f.setPointSizeF(8.5)
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(QColor(self.win.colors["muted"]))
+            p.drawText(opt.rect.adjusted(10, 8, -4, 0), Qt.AlignLeft | Qt.AlignVCenter, it.text())
+            p.restore()
+            return
+        super().paint(p, opt, index)
         if it is None:
             return
         selected = bool(opt.state & QStyle.State_Selected)
@@ -1256,6 +1346,8 @@ archivierten Chats; dort holt <b>⋯ → Wiederherstellen</b> ihn zurück.</li>
 <li><b>Profile</b> legen fest, welche Werkzeuge die KI benutzen darf (Dateien, Shell, Browser …) und welchen System-Prompt sie bekommt.
 Bearbeiten unter ⚙ Einstellungen → Profile.</li>
 <li><b>Denken aus</b> macht Antworten deutlich schneller, dafür überlegt das Modell weniger.</li>
+<li><b>Freigabe-Modus</b> (Chip unter dem Eingabefeld bzw. Symbol in der Popup-Infozeile, /modus yolo): 🛡 immer fragen · ✎ Dateien automatisch · ⚡ Yolo (nichts mehr fragen) · 👁 nur lesen.</li>
+<li><b>Nachschreiben:</b> Während spike arbeitet, einfach weiterschreiben und Enter – die Nachricht wird vorgemerkt (⏳) und nach dem nächsten Schritt bzw. nach der Antwort mitgegeben. Klick auf ⏳ holt sie zurück ins Eingabefeld.</li>
 </ul>
 
 <h2>Wenn die KI etwas tun will</h2>
@@ -1360,6 +1452,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.popup, self.ctrl = popup, ctrl
         self._hidden_at = 0.0
+        self._used_at = 0.0          # zuletzt benutzt (aktiv/gesendet) – das Popup übernimmt den Chat des zuletzt benutzten Fensters
         self._was_active = False
         self.setWindowTitle("spike")
         self.resize(1200, 820)
@@ -1390,6 +1483,9 @@ class MainWindow(QMainWindow):
         self._rec_timer.timeout.connect(self._rec_tick)
         self.vision = {}             # endpoint-name -> versteht Bilder?
         self.attachments = []        # Anhänge für die nächste Nachricht
+        self.queue = []              # Nachrichten, die während einer Antwort geschrieben wurden
+        self._stopped_by_user = False
+        self._queue_lock = threading.Lock()
         self.setAcceptDrops(True)
         self._shell_running = False
 
@@ -1399,10 +1495,16 @@ class MainWindow(QMainWindow):
         self.side.setFixedWidth(250)
         title = QLabel("✦  spike")
         title.setStyleSheet("font-size: 13pt; font-weight: 700; padding: 4px 2px;")
-        btn_new = QPushButton("+  Neuer Chat")
-        btn_new.setObjectName("Primary")
+        btn_new = QPushButton("＋   Neuer Chat")
+        btn_new.setObjectName("NewChat")
+        btn_new.setToolTip("Neuer Chat (Strg+N)")
         btn_new.setCursor(Qt.PointingHandCursor)
         btn_new.clicked.connect(self.new_chat)
+        self.side_search = QLineEdit()
+        self.side_search.setObjectName("SideSearch")
+        self.side_search.setPlaceholderText("🔍  Chats durchsuchen")
+        self.side_search.setClearButtonEnabled(True)
+        self.side_search.textChanged.connect(self._filter_chats)
         self.chat_list = QListWidget()
         self.chat_list.setObjectName("Chats")
         self.chat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # lange Titel mit „…“ statt Scrollleiste
@@ -1424,20 +1526,42 @@ class MainWindow(QMainWindow):
         self.btn_archive.setCheckable(True)
         self.btn_archive.setToolTip("Archivierte Chats anzeigen")
         self.btn_archive.toggled.connect(self._toggle_archive)
-        btn_set = QPushButton("⚙  Einstellungen")
-        btn_set.clicked.connect(self.open_settings)
+        btn_set = _icon_btn("⚙", "Einstellungen", self.open_settings)
         sl = QVBoxLayout(self.side)
-        sl.setContentsMargins(12, 14, 12, 12)
+        sl.setContentsMargins(12, 12, 12, 10)
         sl.setSpacing(8)
-        sl.addWidget(title)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(_icon_btn("⟨", "Seitenleiste einklappen (Strg+B)", self.toggle_side))
+        sl.addLayout(head)
         sl.addWidget(btn_new)
-        self.hist_label = QLabel("VERLAUF")
+        sl.addWidget(self.side_search)
+        self.hist_label = QLabel("ARCHIV")
         self.hist_label.setObjectName("Muted")
-        self.hist_label.setStyleSheet("font-size: 8.5pt; font-weight: 600; padding: 8px 4px 0 4px;")
+        self.hist_label.setStyleSheet("font-size: 8.5pt; font-weight: 600; padding: 4px 4px 0 4px;")
+        self.hist_label.hide()
         sl.addWidget(self.hist_label)
         sl.addWidget(self.chat_list, 1)
-        sl.addWidget(self.btn_archive)
-        sl.addWidget(btn_set)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.addWidget(self.btn_archive, 1)
+        foot.addWidget(btn_set)
+        sl.addLayout(foot)
+
+        # eingeklappte Seitenleiste: schmale Symbolleiste
+        self.rail = QWidget()
+        self.rail.setObjectName("Rail")
+        self.rail.setFixedWidth(54)
+        rl_ = QVBoxLayout(self.rail)
+        rl_.setContentsMargins(6, 12, 6, 10)
+        rl_.setSpacing(6)
+        rl_.addWidget(_icon_btn("☰", "Seitenleiste ausklappen (Strg+B)", self.toggle_side), 0, Qt.AlignHCenter)
+        rl_.addWidget(_icon_btn("＋", "Neuer Chat (Strg+N)", self.new_chat), 0, Qt.AlignHCenter)
+        rl_.addWidget(_icon_btn("🔍", "Chats durchsuchen", self._rail_search), 0, Qt.AlignHCenter)
+        rl_.addStretch(1)
+        rl_.addWidget(_icon_btn("⚙", "Einstellungen", self.open_settings), 0, Qt.AlignHCenter)
 
         # --- Kopfzeile ---
         self.topbar = QWidget()
@@ -1451,14 +1575,38 @@ class MainWindow(QMainWindow):
         for cb, tip in ((self.cb_ep, "Server / API"), (self.cb_model, "Modell"), (self.cb_profile, "Profil")):
             cb.setToolTip(tip)
         top = QHBoxLayout(self.topbar)
-        top.setContentsMargins(10, 8, 10, 8)
+        top.setContentsMargins(10, 8, 10, 4)
         top.setSpacing(8)
-        top.addWidget(_icon_btn("☰", "Seitenleiste ein/aus (Strg+B)", self.toggle_side))
-        top.addWidget(self.cb_ep)
-        top.addWidget(self.cb_model, 1)
-        top.addWidget(self.cb_profile)
-        top.addWidget(_icon_btn("⟳", "Modelle neu laden", self.refresh_models))
-        top.addStretch(0)
+        # Server/Modell/Profil bleiben als (versteckte) Auswahlfelder die Datenquelle –
+        # sichtbar ist nur ein Chip in der Mitte mit einem Menü für alles
+        for cb in (self.cb_ep, self.cb_model, self.cb_profile):
+            cb.setParent(self.topbar)
+            cb.hide()
+        self.top_chip = QToolButton()
+        self.top_chip.setObjectName("TopChip")
+        self.top_chip.setCursor(Qt.PointingHandCursor)
+        self.top_chip.setPopupMode(QToolButton.InstantPopup)
+        m_top = QMenu(self.top_chip)
+        m_top.aboutToShow.connect(lambda m=m_top: (m.clear(), self._fill_model_menu(m), self._fill_profile_menu(m)))
+        self.top_chip.setMenu(m_top)
+        top.addSpacing(96)                # gleicht die Knöpfe rechts aus → Chip sitzt mittig
+        top.addStretch(1)
+        top.addWidget(self.top_chip)
+        # Denken an/aus direkt in der Kopfzeile (gilt fürs aktuelle Profil)
+        self.btn_think = QPushButton("💭")
+        self.btn_think.setObjectName("ChipBtn")
+        self.btn_think.setCursor(Qt.PointingHandCursor)
+        m_think = QMenu(self.btn_think)
+        m_think.aboutToShow.connect(lambda m=m_think: (m.clear(), self._fill_think_menu(m)))
+        self.btn_think.setMenu(m_think)
+        # Freigabe-Modus: immer fragen / Dateien automatisch / nicht mehr fragen / nur lesen
+        self.btn_perm = QPushButton()
+        self.btn_perm.setObjectName("ChipBtn")
+        self.btn_perm.setCursor(Qt.PointingHandCursor)
+        m_perm = QMenu(self.btn_perm)
+        m_perm.aboutToShow.connect(lambda m=m_perm: (m.clear(), self._fill_perm_menu(m)))
+        self.btn_perm.setMenu(m_perm)
+        top.addStretch(1)
         top.addWidget(_icon_btn("?", "Hilfe und Bedienung (F1)", self.show_help))
         top.addWidget(_icon_btn("◐", "Hell/Dunkel umschalten", self.toggle_theme))
         top.addWidget(_icon_btn("⤡", "Kompakt-Modus (Strg+K)", self.toggle_compact))
@@ -1466,6 +1614,7 @@ class MainWindow(QMainWindow):
         self.cb_model.currentTextChanged.connect(self._sync_chat_settings)
         self.cb_profile.currentTextChanged.connect(self._sync_chat_settings)
         self.cb_profile.currentTextChanged.connect(lambda *_: self._estimate())
+        self.cb_profile.currentTextChanged.connect(lambda *_: self._update_think_btn())
 
         # --- Chat + Eingabe ---
         self.view = ChatView()
@@ -1473,6 +1622,8 @@ class MainWindow(QMainWindow):
         self.view.on_ask = self._ask_choice
         self.view.on_speak = self.speak
         self.view.on_undo = self.undo_change
+        self.view.on_suggest = self._suggest
+        self.view.user_name = _user_name(self.cfg["settings"])
         self.input = InputBox()
         self.input.setPlaceholderText("Nachricht schreiben …")
         self.input.submitted.connect(self.send)
@@ -1493,32 +1644,34 @@ class MainWindow(QMainWindow):
         composer = Composer()
         composer.setMaximumWidth(ChatView.MAX_W)
         self.composer = composer
-        cl = QHBoxLayout(composer)
+        cv = QVBoxLayout(composer)
         # rechts so viel Abstand wie links: bei der starken Rundung (Radius 20) sitzt der Senden-Knopf
         # sonst optisch zu nah am Rand, obwohl es rechnerisch gleich viel ist wie oben/unten
-        cl.setContentsMargins(10, 6, 10, 6)
-        cl.addWidget(self.btn_compact, 0, Qt.AlignBottom)
+        cv.setContentsMargins(10, 6, 10, 6)
+        cv.setSpacing(4)
+        self.cl_top, self.cl_chips = QHBoxLayout(), QHBoxLayout()
+        self.cl_chips.setSpacing(6)
+        cv.addLayout(self.cl_top)
+        cv.addLayout(self.cl_chips)
         self.btn_pin = _icon_btn("📌", "Anheften: Popup bleibt offen, auch wenn du woanders klickst", self.toggle_pin)
         self.btn_pin.setCheckable(True)
         self.btn_pin.setChecked(bool(self.cfg["settings"].get("popup_pinned")))
         self.btn_pin.setVisible(popup)
-        cl.addWidget(self.btn_pin, 0, Qt.AlignBottom)
         self.btn_attach = _icon_btn("📎", "Datei oder Bild anhängen (auch per Drag & Drop oder Strg+V)\n"
                                     "/screenshot macht ein Bildschirmfoto", self.pick_files)
         self.btn_attach.setFixedSize(36, 36)
-        cl.addWidget(self.btn_attach, 0, Qt.AlignBottom)
         self.input.attach_hook = self._attach_mime
         # alle Knöpfe in der Eingabeleiste gleich hoch wie das einzeilige Eingabefeld,
         # sonst wird die Leiste höher und der Senden-Knopf sitzt nicht mittig
         for b in (self.btn_compact, self.btn_pin):
             b.setFixedSize(36, 36)
-        cl.addWidget(self.input, 1)
         composer.attach(self.input)
         self.btn_mic = _icon_btn("🎤", "Sprechen (Strg+M): klicken, reden, nochmal klicken", self.toggle_record)
         self.btn_mic.setFixedSize(36, 36)
-        cl.addWidget(self.btn_mic, 0, Qt.AlignBottom)
-        cl.addWidget(self.btn_stop, 0, Qt.AlignBottom)
-        cl.addWidget(self.btn_send, 0, Qt.AlignBottom)
+        self.status = QLabel()
+        self.status.setObjectName("StatusText")
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)   # lange Texte nicht verbreitern
+        self.status.setMinimumWidth(0)
         # Vorschlagsliste für /Befehle (über dem Eingabefeld)
         self.cmd_list = QListWidget()
         self.cmd_list.setObjectName("CmdList")
@@ -1530,6 +1683,7 @@ class MainWindow(QMainWindow):
         self.cmd_list.hide()
         self.input.key_hook = self._cmd_key
         self.input.textChanged.connect(self._cmd_suggest)
+        self.input.textChanged.connect(self._poke_fx)
         # Infozeile unter dem Eingabefeld (Kontext, Tempo, Modell) – vor allem fürs Popup
         self.meta = QWidget()
         self.meta.setObjectName("Meta")
@@ -1541,6 +1695,7 @@ class MainWindow(QMainWindow):
         self.meta_bar.setObjectName("MetaBar")
         self.meta_bar.setTextVisible(False)
         self.meta_bar.setFixedSize(50, 5)
+        self.meta_lay = ml_
         self.meta_ctx = QLabel("Kontext –")
         self.meta_speed = QLabel("")
         for lb in (self.meta_ctx, self.meta_speed):
@@ -1554,6 +1709,14 @@ class MainWindow(QMainWindow):
         ml_.addStretch(1)
         ml_.addWidget(self.meta_model)
         ml_.addWidget(self.meta_profile)
+        self.meta_perm = QToolButton()
+        self.meta_perm.setObjectName("MetaBtn")
+        self.meta_perm.setCursor(Qt.PointingHandCursor)
+        self.meta_perm.setPopupMode(QToolButton.InstantPopup)
+        m_perm2 = QMenu(self.meta_perm)
+        m_perm2.aboutToShow.connect(lambda m=m_perm2: (m.clear(), self._fill_perm_menu(m)))
+        self.meta_perm.setMenu(m_perm2)
+        ml_.addWidget(self.meta_perm)
         meta_help = QToolButton()
         meta_help.setObjectName("MetaBtn")
         meta_help.setText("?")
@@ -1564,6 +1727,7 @@ class MainWindow(QMainWindow):
         self._last_tps = 0.0
         self._ctx_used = 0
         crow = QVBoxLayout()
+        self.crow = crow
         crow.setContentsMargins(22, 6, 22, 8)
         crow.setSpacing(5)
         self.sel_bar = self._build_sel_bar()
@@ -1573,7 +1737,14 @@ class MainWindow(QMainWindow):
         self.att_row.setContentsMargins(8, 0, 8, 0)
         self.att_row.setSpacing(6)
         self.att_bar.hide()
-        for w_ in (self.cmd_list, self.sel_bar, self.att_bar, composer, self.meta):
+        # Warteschlange: während einer Antwort abgeschickte Nachrichten
+        self.queue_bar = QWidget()
+        self.queue_bar.setMaximumWidth(ChatView.MAX_W)
+        self.queue_col = QVBoxLayout(self.queue_bar)
+        self.queue_col.setContentsMargins(8, 0, 8, 0)
+        self.queue_col.setSpacing(3)
+        self.queue_bar.hide()
+        for w_ in (self.cmd_list, self.queue_bar, self.sel_bar, self.att_bar, composer, self.meta):
             h = QHBoxLayout()
             h.addStretch(1)
             h.addWidget(w_, 100)
@@ -1593,6 +1764,7 @@ class MainWindow(QMainWindow):
         rl = QHBoxLayout(root)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
+        rl.addWidget(self.rail)
         rl.addWidget(self.side)
         rl.addWidget(main, 1)
         if popup:
@@ -1600,21 +1772,14 @@ class MainWindow(QMainWindow):
             shell = PopupShell(root, self)
             self.setCentralWidget(shell)
             self.fx = CRTOverlay(shell.frame, radius=PopupShell.RADIUS)   # Effekt nur innerhalb der runden Fläche
-            self.fx_text = TextFlicker(shell.frame, radius=PopupShell.RADIUS)
+            self.fx_knots = KnotOverlay(shell.frame, radius=PopupShell.RADIUS)
         else:
             self.setCentralWidget(root)
             self.fx = CRTOverlay(root)
-            self.fx_text = TextFlicker(root)
+            self.fx_knots = KnotOverlay(main)          # nur im Chatbereich, nicht hinter der Seitenleiste
 
-        # --- Statusleiste ---
-        self.status = QLabel()
+        # Kontext-Wert (früher in der Statusleiste) – wird weiter gepflegt, angezeigt wird die Infozeile
         self.ctx_bar = QProgressBar()
-        self.ctx_bar.setMaximumWidth(200)
-        self.ctx_bar.setFixedHeight(14)
-        self.ctx_bar.setFormat("Kontext %p%")
-        self.statusBar().addWidget(self.status, 1)
-        self.statusBar().addPermanentWidget(self.ctx_bar)
-        self.statusBar().setSizeGripEnabled(False)
 
         for keys, slot in (("Ctrl+N", self.new_chat), ("Ctrl+K", self.toggle_compact), ("Ctrl+M", self.toggle_record),
                            ("Ctrl+B", self.toggle_side), ("Escape", self.escape),
@@ -1652,11 +1817,11 @@ class MainWindow(QMainWindow):
         self.apply_theme()
         self._fill_combos()
         self._load_chat_list()
-        if self.chat_list.count() == 0:
+        if self._n_chats() == 0:
             self.new_chat()
             self.refresh_models()     # sonst fragt beim allerersten Start niemand den Server
         else:
-            self.chat_list.setCurrentRow(0)
+            self._select_first_chat()
         self.apply_compact()
         if errors:
             self.status.setText("⚠ Plugin-Fehler: " + " | ".join(errors))
@@ -1672,8 +1837,13 @@ class MainWindow(QMainWindow):
         self.colors = THEMES.get(mode, THEMES["dark"])
         app = QApplication.instance()
         app.setPalette(palette(self.colors))
+        if not getattr(app, "_spike_font", False):      # moderne Grundschrift (Code-Bereiche bleiben Monospace)
+            f = QFont(app.font())
+            f.setFamilies(UI_FONTS)
+            app.setFont(f)
+            app._spike_font = True
         fx_mode = fx_wanted(self.cfg["settings"], self.colors)
-        fx_on = fx_mode in ("crt", "crt_text")
+        fx_on = bool(fx_mode)
         extra = ""
         if fx_on:   # Hintergrund-Effekt soll hinter dem Chat sichtbar sein → Flächen darüber durchsichtig
             side = QColor(self.colors["panel"])
@@ -1682,7 +1852,7 @@ class MainWindow(QMainWindow):
                      f" #Side {{ background: rgba({side.red()}, {side.green()}, {side.blue()}, 200); }}")
         app.setStyleSheet(qss(self.colors) + extra)
         style = self.cfg["settings"].get("input_style", "standard")
-        self.composer.set_style(style, self.colors, compact=self.popup)
+        self.composer.set_style(style, self.colors, compact=self.is_compact())
         if style in ("neon", "linie"):    # leuchtet bzw. hat keine Fläche → kein Schatten
             self.composer.setGraphicsEffect(None)
         else:
@@ -1694,8 +1864,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_ctx_used"):
             self._update_meta()           # Kontext-Balken in der neuen Akzentfarbe
         if getattr(self, "fx", None) is not None:
-            self.fx.set_active(fx_on, tint=self.colors.get("accent"))
-            self.fx.text_flicker = self.fx_text if fx_mode == "crt_text" else None
+            self.fx.set_active(fx_mode == "crt", tint=self.colors.get("accent"))
+            self.fx_knots.set_active(fx_mode == "knoten", dark=is_dark(self.colors))
         if self.chat is not None:
             self.redraw()
 
@@ -1709,12 +1879,51 @@ class MainWindow(QMainWindow):
 
     def apply_compact(self):
         compact = self.is_compact()
-        self.side.setVisible(not compact and self.cfg["settings"].get("show_side", True))
+        show_side = self.cfg["settings"].get("show_side", True)
+        self.side.setVisible(not compact and show_side)
+        self.rail.setVisible(not compact and not show_side)
         self.topbar.setVisible(not compact)
-        self.statusBar().setVisible(not compact)
         self.meta.setVisible(compact)
-        self.btn_compact.setVisible(compact)
+        self._arrange_composer(compact)
+        self.crow.setContentsMargins(22, 6, 22, 8 if compact else 18)   # groß: Karte schwebt über dem Rand
+        self.composer.set_style(self.cfg["settings"].get("input_style", "standard"), self.colors, compact=compact)
         self.redraw()
+
+    def _arrange_composer(self, compact):
+        """Kompakt/Popup: alles in einer Zeile + Infozeile darunter.
+        Großes Fenster: Text oben, darunter eine Chip-Reihe (Anhang, Denken, Modus, Kontext, Status, Senden)."""
+        for lay in (self.cl_top, self.cl_chips):
+            while lay.count():
+                lay.takeAt(0)
+        meta_w = (self.meta_bar, self.meta_ctx, self.meta_speed)
+        for w in meta_w:
+            self.meta_lay.removeWidget(w)
+        self.btn_compact.setVisible(compact)
+        for w in (self.btn_think, self.btn_perm, self.status):
+            w.setVisible(not compact)
+        if compact:
+            for w in (self.btn_compact, self.btn_pin, self.btn_attach):
+                self.cl_top.addWidget(w, 0, Qt.AlignBottom)
+            self.cl_top.addWidget(self.input, 1)
+            for w in (self.btn_mic, self.btn_stop, self.btn_send):
+                self.cl_top.addWidget(w, 0, Qt.AlignBottom)
+            for i, w in enumerate(meta_w):
+                self.meta_lay.insertWidget(i, w, 0, Qt.AlignVCenter if i == 0 else Qt.Alignment())
+        else:
+            self.cl_top.addWidget(self.input, 1)
+            for w in (self.btn_think, self.btn_perm):
+                w.setFixedHeight(28)
+            ch = self.cl_chips
+            for w in (self.btn_attach, self.btn_think, self.btn_perm):
+                ch.addWidget(w, 0, Qt.AlignVCenter)
+            ch.addSpacing(6)
+            ch.addWidget(self.meta_bar, 0, Qt.AlignVCenter)
+            ch.addWidget(self.meta_ctx, 0, Qt.AlignVCenter)
+            ch.addWidget(self.meta_speed, 0, Qt.AlignVCenter)
+            ch.addSpacing(6)
+            ch.addWidget(self.status, 1, Qt.AlignVCenter)
+            for w in (self.btn_mic, self.btn_stop, self.btn_send):
+                ch.addWidget(w, 0, Qt.AlignVCenter)
 
     def toggle_compact(self):
         if self.popup:      # im Popup: großes Fenster mit demselben Chat öffnen
@@ -1742,6 +1951,13 @@ class MainWindow(QMainWindow):
         self.cfg["settings"]["show_side"] = not self.cfg["settings"].get("show_side", True)
         C.save_config(self.cfg)
         self.side.setVisible(self.cfg["settings"]["show_side"])
+        self.rail.setVisible(not self.cfg["settings"]["show_side"])
+
+    def _rail_search(self):
+        if not self.cfg["settings"].get("show_side", True):
+            self.toggle_side()
+        self.side_search.setFocus()
+        self.side_search.selectAll()
 
     # --- Kombos ---
     def _fill_combos(self):
@@ -1881,28 +2097,85 @@ class MainWindow(QMainWindow):
                 self.chat = C.load_chat(chat_id)
                 self.redraw(force_bottom=True)
                 return
-        if self.chat_list.count():
-            self.chat_list.setCurrentRow(0)
+        if self._n_chats():
+            self._select_first_chat()
 
     def _load_chat_list(self):
         self.chat_list.blockSignals(True)
         self.chat_list.clear()
         self._hover_item = None
-        for c in C.list_chats(archived=self._show_archive):
+        last = None
+        for c in C.list_chats(archived=self._show_archive, with_text=True):
+            g = _day_group(c["mtime"])
+            if g != last:
+                self.chat_list.addItem(_group_item(g))
+                last = g
             it = QListWidgetItem(c["title"])
             it.setData(Qt.UserRole, c["id"])
+            it.setData(Qt.UserRole + 2, c.get("text", ""))
             self.chat_list.addItem(it)
         self.chat_list.blockSignals(False)
+        self._filter_chats()
         self._update_archive_btn()
         for ms in (0, 150, 600):          # Liste legt ihre Einträge verzögert an → mehrfach nachsehen
             QTimer.singleShot(ms, self._place_chat_more)
 
+    # --- Gruppen (Heute/Gestern …) und Suche ---
+    def _chat_items(self):
+        return [self.chat_list.item(i) for i in range(self.chat_list.count())
+                if self.chat_list.item(i).data(Qt.UserRole)]
+
+    def _n_chats(self):
+        return len(self._chat_items())
+
+    def _select_first_chat(self):
+        items = [it for it in self._chat_items() if not it.isHidden()] or self._chat_items()
+        if items:
+            self.chat_list.setCurrentItem(items[0])
+
+    def _insert_new_item(self, it):
+        """Neuen Chat oben unter „Heute“ einsortieren."""
+        first = self.chat_list.item(0)
+        if first is not None and first.data(Qt.UserRole + 1) == "Heute":
+            self.chat_list.insertItem(1, it)
+        else:
+            self.chat_list.insertItem(0, it)
+            self.chat_list.insertItem(0, _group_item("Heute"))
+
+    def _tidy_groups(self):
+        """Überschriften ohne (sichtbare) Chats darunter entfernen bzw. ausblenden."""
+        i = 0
+        while i < self.chat_list.count():
+            it = self.chat_list.item(i)
+            if not it.data(Qt.UserRole):
+                nxt = self.chat_list.item(i + 1)
+                if nxt is None or not nxt.data(Qt.UserRole):
+                    self.chat_list.takeItem(i)
+                    continue
+            i += 1
+        head = None
+        for i in range(self.chat_list.count()):
+            it = self.chat_list.item(i)
+            if not it.data(Qt.UserRole):
+                head = it
+                it.setHidden(True)
+            elif not it.isHidden() and head is not None:
+                head.setHidden(False)
+
+    def _filter_chats(self, *_):
+        q = self.side_search.text().strip().lower() if hasattr(self, "side_search") else ""
+        words = q.split()
+        for it in self._chat_items():
+            blob = (it.data(Qt.UserRole + 2) or "") + "\n" + it.text().lower()
+            it.setHidden(bool(words) and not all(w in blob for w in words))
+        self._tidy_groups()
+
     # --- „⋯“-Menü am Chat und Archiv ---
     def _update_archive_btn(self):
-        n = len(C.list_chats(archived=True)) if not self._show_archive else self.chat_list.count()
+        n = len(C.list_chats(archived=True)) if not self._show_archive else self._n_chats()
         self.btn_archive.setText("←  Zurück zum Verlauf" if self._show_archive else f"🗄  Archiv ({n})")
         self.btn_archive.setToolTip("" if self._show_archive else "Archivierte Chats anzeigen")
-        self.hist_label.setText("ARCHIV" if self._show_archive else "VERLAUF")
+        self.hist_label.setVisible(self._show_archive)
 
     def _toggle_archive(self, on):
         if self.agent:
@@ -1920,8 +2193,8 @@ class MainWindow(QMainWindow):
                 self.chat_list.blockSignals(False)
                 break
         else:
-            if self.chat_list.count():
-                self.chat_list.setCurrentRow(0)
+            if self._n_chats():
+                self._select_first_chat()
             elif not on:
                 self.new_chat()
 
@@ -1940,6 +2213,8 @@ class MainWindow(QMainWindow):
             if t == QEvent.MouseMove:
                 pos = e.position().toPoint()
                 it = self.chat_list.itemAt(pos)
+                if it is not None and not it.data(Qt.UserRole):
+                    it = None                       # Gruppen-Überschrift
                 hot = it is not None and self._more_rect(it).contains(pos)
                 if it is not self._hover_item or hot != self._more_hot:
                     self._hover_item, self._more_hot = it, hot
@@ -1953,6 +2228,8 @@ class MainWindow(QMainWindow):
                     and e.button() == Qt.LeftButton:
                 pos = e.position().toPoint()
                 it = self.chat_list.itemAt(pos)
+                if it is not None and not it.data(Qt.UserRole):
+                    return True                     # Klick auf Gruppen-Überschrift: nichts tun
                 on_more = it is not None and self._more_rect(it).contains(pos)
                 if t == QEvent.MouseButtonRelease:
                     pressed, self._more_pressed = getattr(self, "_more_pressed", None), None
@@ -1970,7 +2247,7 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, e)
 
     def _chat_menu(self, it, pos):
-        if it is None:
+        if it is None or not it.data(Qt.UserRole):
             return
         cid = it.data(Qt.UserRole)
         saved = (C.CHATS_DIR / f"{cid}.json").exists()
@@ -2040,13 +2317,16 @@ class MainWindow(QMainWindow):
         self._hover_item = None
         self.chat_list.blockSignals(True)
         self.chat_list.takeItem(row)
+        self._tidy_groups()
         self.chat_list.blockSignals(False)
         if not open_next:
             QTimer.singleShot(0, self._place_chat_more)
             return
         self.chat = None
-        if self.chat_list.count():
-            nxt = self.chat_list.item(min(row, self.chat_list.count() - 1))
+        items = self._chat_items()
+        if items:
+            rows = [self.chat_list.row(x) for x in items]
+            nxt = next((x for x, r in zip(items, rows) if r >= row), items[-1])
             self.chat_list.blockSignals(True)
             self.chat_list.setCurrentItem(nxt)
             self.chat_list.blockSignals(False)
@@ -2088,11 +2368,19 @@ class MainWindow(QMainWindow):
             self._show_archive = False
             self._load_chat_list()
         self.chat = C.new_chat(self.cb_ep.currentText(), self.model_id(), self.cb_profile.currentText())
+        self._restore_cwd()
+        if self.isVisible():
+            self._used_at = time.monotonic()
         it = QListWidgetItem(self.chat["title"])
         it.setData(Qt.UserRole, self.chat["id"])
         self.chat_list.blockSignals(True)
-        self.chat_list.insertItem(0, it)
-        self.chat_list.setCurrentRow(0)
+        if self.side_search.text():
+            self.side_search.blockSignals(True)
+            self.side_search.clear()
+            self.side_search.blockSignals(False)
+            self._filter_chats()
+        self._insert_new_item(it)
+        self.chat_list.setCurrentItem(it)
         self.chat_list.blockSignals(False)
         self.ctx_bar.setValue(0)
         self.redraw()
@@ -2100,7 +2388,7 @@ class MainWindow(QMainWindow):
         self.input.setFocus()
 
     def _chat_selected(self, cur, prev):
-        if not cur:
+        if not cur or not cur.data(Qt.UserRole):
             return
         if self.agent:   # während einer Antwort nicht wechseln
             self.chat_list.blockSignals(True)
@@ -2111,8 +2399,12 @@ class MainWindow(QMainWindow):
             self.chat = C.load_chat(cur.data(Qt.UserRole))
         except FileNotFoundError:
             return   # neuer, noch ungespeicherter Chat
-        if prev and prev.text() == "Neuer Chat" and self.chat_list.row(prev) >= 0:
+        self._restore_cwd()
+        if self.isVisible():
+            self._used_at = time.monotonic()
+        if prev and prev.data(Qt.UserRole) and prev.text() == "Neuer Chat" and self.chat_list.row(prev) >= 0:
             self.chat_list.takeItem(self.chat_list.row(prev))   # leere Chats aufräumen
+            self._tidy_groups()
         # Server/Modell/Profil bleiben wie gewählt (gelten für alle Chats und beide Fenster)
         self.ctx_bar.setValue(0)
         self.refresh_models()
@@ -2518,7 +2810,13 @@ class MainWindow(QMainWindow):
         if self._shell_running:
             self._info("Warte, bis der Terminal-Befehl fertig ist (Stopp bricht ab)")
             return
+        if self.agent and self.chat is not None and (text or self.attachments):
+            self._enqueue(text)
+            return
         if (not text and not self.attachments) or self.agent or self.chat is None:
+            return
+        if self.ctrl and self.ctrl.busy(self.chat["id"]):
+            self._info("Dieser Chat antwortet gerade im anderen Fenster – bitte kurz warten")
             return
         if self.ctrl and getattr(self.ctrl, "web", None) and self.chat["id"] in self.ctrl.web.runs:
             self._info("📱 Dieser Chat antwortet gerade auf dem Handy – bitte kurz warten")
@@ -2538,8 +2836,86 @@ class MainWindow(QMainWindow):
                 it.setText(self.chat["title"])
         self._start_agent()
 
+    # --- Warteschlange ---
+    def _enqueue(self, text):
+        self.input.clear()
+        with self._queue_lock:
+            self.queue.append(self._user_message(text))
+        self._show_queue()
+        self._info("⏳ Vorgemerkt – geht nach dem nächsten Schritt bzw. nach der Antwort raus")
+
+    @staticmethod
+    def _merge_msgs(items):
+        if len(items) == 1:
+            return items[0]
+        msg = {"role": "user", "content": "\n\n".join(m["content"] for m in items)}
+        if any("_attachments" in m for m in items):
+            msg["_text"] = "\n\n".join(m.get("_text", m["content"]) for m in items if m.get("_text", m["content"]))
+            msg["_attachments"] = [a for m in items for a in m.get("_attachments", [])]
+            imgs = [p for m in items for p in m.get("_images", [])]
+            if imgs:
+                msg["_images"] = imgs
+        return msg
+
+    def _take_queue(self):
+        """Wird vom Agent-Thread aufgerufen: alle vorgemerkten Nachrichten als eine Nutzer-Nachricht."""
+        with self._queue_lock:
+            items, self.queue = self.queue, []
+        return self._merge_msgs(items) if items else None
+
+    def _show_queue(self):
+        while self.queue_col.count():
+            it = self.queue_col.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        with self._queue_lock:
+            items = list(self.queue)
+        for i, m in enumerate(items):
+            text = (m.get("_text", m["content"]) or "").replace("\n", " ").strip()
+            n_att = len(m.get("_attachments", []))
+            b = QPushButton(f"⏳ {text[:70] + ('…' if len(text) > 70 else '')}"
+                            + (f"  📎{n_att}" if n_att else "") + "   ✕")
+            b.setObjectName("CopyBtn")
+            b.setToolTip("Wartet – geht nach dem nächsten Schritt bzw. nach der Antwort raus.\n"
+                         "Klicken: zurück ins Eingabefeld holen")
+            b.clicked.connect(lambda _=False, i=i: self._unqueue(i))
+            self.queue_col.addWidget(b, 0, Qt.AlignLeft)
+        self.queue_bar.setVisible(bool(items))
+
+    def _unqueue(self, i):
+        with self._queue_lock:
+            m = self.queue.pop(i) if i < len(self.queue) else None
+        if m:
+            cur = self.input.toPlainText().strip()
+            self.input.setPlainText("\n".join(t for t in (m.get("_text", m["content"]), cur) if t))
+            self.attachments = m.get("_attachments", []) + self.attachments
+            self._show_attachments()
+        self._show_queue()
+        self.input.setFocus()
+
+    def _flush_queue(self):
+        """Antwort fertig: Vorgemerktes als nächste Nachricht senden (nach Stopp nur zurück ins Eingabefeld)."""
+        msg = self._take_queue()
+        self._show_queue()
+        if not msg or self.chat is None:
+            return
+        if self._stopped_by_user or not self.endpoint():
+            with self._queue_lock:
+                self.queue.insert(0, msg)
+            self._unqueue(0)
+            return
+        self.chat["messages"].append(msg)
+        self.redraw(force_bottom=True)
+        self._start_agent()
+
     def _start_agent(self):
+        self._stopped_by_user = False
+        self._used_at = time.monotonic()
+        if self.chat is not None:
+            C.save_chat(self.chat)          # sofort speichern: das andere Fenster soll den Chat finden
         self.agent = self._new_agent()
+        self.agent.take_inbox = self._take_queue
+        self.agent.inbox_taken.connect(self._show_queue)
         self.agent.speed.connect(self._speed)
         self.agent.changed.connect(self.redraw)
         self.agent.stats.connect(self._stats)
@@ -2556,6 +2932,7 @@ class MainWindow(QMainWindow):
         if self._shell_running:
             self.toolbox.kill()
         if self.agent:
+            self._stopped_by_user = True
             self.agent.stop()
             self.status.setText("Abbruch …")
 
@@ -2627,6 +3004,7 @@ class MainWindow(QMainWindow):
         self._shell_running = False
         self.btn_stop.hide()
         self.btn_send.show()
+        self.chat["cwd"] = str(self.toolbox.cwd)
         C.save_chat(self.chat)
         self.redraw()
         self._estimate()
@@ -2638,7 +3016,14 @@ class MainWindow(QMainWindow):
             self.ctx_bar.setToolTip(f"{used} / {n_ctx} Tokens")
         self.status.setText(text)
 
+    def _restore_cwd(self):
+        """Jeder Chat hat seinen eigenen Arbeitsordner (cd im Terminal); neue Chats starten im Home-Ordner."""
+        cwd = Path((self.chat or {}).get("cwd") or Path.home())
+        self.toolbox.cwd = cwd if cwd.is_dir() else Path.home()
+
     def _finished(self):
+        if self.chat is not None:
+            self.chat["cwd"] = str(self.toolbox.cwd)
         if self._quick_copy and self.chat and self.chat["messages"]:
             self._quick_copy = False
             last = self.chat["messages"][-1]
@@ -2651,12 +3036,20 @@ class MainWindow(QMainWindow):
                 self.speak(last["content"])
         C.save_chat(self.chat)
         self.agent = None
+        if self.ctrl and self.chat is not None:      # anderes Fenster zeigt denselben Chat → Ergebnis nachladen
+            for w in (self.ctrl.main, self.ctrl.popup):
+                if w is not None and w is not self and not w.agent and w.chat \
+                        and w.chat.get("id") == self.chat.get("id"):
+                    w.chat = C.load_chat(self.chat["id"])
+                    w.redraw(force_bottom=True)
         self.btn_stop.hide()
         self.btn_send.show()
         self.input.setPlaceholderText("Nachricht schreiben …")
         self.redraw()
         self._update_meta()
         self.input.setFocus()
+        if self.queue:
+            QTimer.singleShot(0, self._flush_queue)
 
     # --- Infozeile: Kontext und Tempo ---
     def _usage(self, used, n_ctx, tps):
@@ -2682,14 +3075,17 @@ class MainWindow(QMainWindow):
                                     f"border-radius: 2px; }} QProgressBar#MetaBar::chunk {{ background: {col};"
                                     f"border-radius: 2px; }}")
         summ = " · 📦" if self.chat and self.chat.get("summary") else ""
-        self.meta_ctx.setText(f"{pct} % · {fmt(used)} / {fmt(n)}{summ}" if n else "Kontext –")
+        if self.popup:      # im schmalen Popup nur die Prozentzahl – sonst wird der Modellname zu „q…“ gekürzt
+            self.meta_ctx.setText(f"{pct} %{summ}" if n else "–")
+        else:
+            self.meta_ctx.setText(f"{pct} % · {fmt(used)} / {fmt(n)}{summ}" if n else "Kontext –")
         tip = f"Kontext: {used:,} von {n:,} Tokens belegt ({pct} %)".replace(",", ".")
         if summ:
             tip += f"\n📦 Älterer Verlauf ist zusammengefasst (bis Nachricht {self.chat.get('summary_upto')})."
         tip += "\n/compact fasst den Verlauf jetzt zusammen."
         self.meta_ctx.setToolTip(tip)
-        if not self.agent:
-            self.meta_speed.setText(f"⚡ {self._last_tps:.0f} tok/s" if self._last_tps else "")
+        if not self.agent:   # Popup: Tempo nur während einer Antwort (Platz für den Modellnamen)
+            self.meta_speed.setText(f"⚡ {self._last_tps:.0f} tok/s" if self._last_tps and not self.popup else "")
         model = (self.model_id() or "").rsplit("/", 1)[-1].removesuffix(".gguf")
         if len(model) > 26:
             model = model[:25] + "…"
@@ -2699,6 +3095,63 @@ class MainWindow(QMainWindow):
                                    "Klick: Modell oder Server wechseln")
         self.meta_profile.setText(f"{self.cb_profile.currentText() or 'Profil'}{think} ▾")
         self.meta_profile.setToolTip(f"Profil: {self.cb_profile.currentText()}\nKlick: Profil oder Denken wechseln")
+        self._update_think_btn()
+        self._update_perm_btn()
+        if hasattr(self, "top_chip"):
+            self.top_chip.setText(f"{model or 'Modell wählen'}  ·  {self.cb_profile.currentText() or 'Profil'}  ▾")
+            self.top_chip.setToolTip(f"Server: {self.cb_ep.currentText()}\nModell: {self.model_id()}\n"
+                                     f"Profil: {self.cb_profile.currentText()}\nKlick: Modell, Server, Profil, Denken")
+
+    def _update_perm_btn(self):
+        if not hasattr(self, "btn_perm"):
+            return
+        mode = self.cfg["settings"].get("perm_mode", "fragen")
+        label = PERM_LABEL.get(mode, PERM_LABEL["fragen"])
+        desc = next((d for k, _, d in PERM_MODES if k == mode), "")
+        tip = f"Freigabe-Modus: {label}\n{desc}\nKlick zum Wechseln · auch per /modus"
+        short = {"fragen": "🛡 Fragen", "dateien": "✎ Dateien auto", "alles": "⚡ Yolo", "lesen": "👁 Nur lesen"}
+        self.btn_perm.setText(short.get(mode, short["fragen"]))
+        self.meta_perm.setText(label.split()[0])
+        warn = mode == "alles"
+        for b in (self.btn_perm, self.meta_perm):
+            b.setToolTip(tip)
+            if b.property("warn") != warn:      # Farbe über Eigenschaft + Stil, nicht per setStyleSheet am Knopf
+                b.setProperty("warn", warn)
+                b.style().unpolish(b)
+                b.style().polish(b)
+                b.updateGeometry()
+
+    def _fill_perm_menu(self, m):
+        self._menu_head(m, "Freigaben")
+        grp = []
+        cur = self.cfg["settings"].get("perm_mode", "fragen")
+        for key, label, desc in PERM_MODES:
+            a = self._menu_choice(m, grp, label, cur == key, lambda _=False, k=key: self.set_perm_mode(k))
+            a.setToolTip(desc)
+        m.setToolTipsVisible(True)
+
+    def set_perm_mode(self, mode):
+        self.cfg["settings"]["perm_mode"] = mode
+        C.save_config(self.cfg)
+        wins = [self] + ([w for w in (self.ctrl.main, self.ctrl.popup) if w is not None and w is not self]
+                         if self.ctrl else [])
+        for w in wins:
+            w._update_perm_btn()
+        # wartet gerade eine Freigabe und der neue Modus erlaubt sie → gleich weitermachen
+        a = self.agent
+        if a and a.pending and a.pending.get("kind") != "ask":
+            if mode == "alles" or (mode == "dateien" and a._cur[0] in ("write_file", "edit_file")):
+                a.answer(True)
+        self._info(f"Freigabe-Modus: {PERM_LABEL[mode]}")
+        self.input.setFocus()
+
+    def _update_think_btn(self):
+        if not hasattr(self, "btn_think"):
+            return
+        cur = self.profile().get("thinking", "standard")
+        self.btn_think.setText({"an": "💭 an", "aus": "💭 aus"}.get(cur, "💭 Standard"))
+        self.btn_think.setToolTip(f"Denken im Profil „{self.cb_profile.currentText()}“: {cur}\n"
+                                  "Aus = deutlich schnellere Antworten. Auch per /denken an|aus")
 
     # --- Dropdowns in der Infozeile ---
     def _meta_button(self, filler, keep=44):
@@ -2749,7 +3202,11 @@ class MainWindow(QMainWindow):
         for i in range(self.cb_profile.count()):
             self._menu_choice(m, grp, self.cb_profile.itemText(i), i == self.cb_profile.currentIndex(),
                               lambda _=False, i=i: self._meta_pick(self.cb_profile, i))
+        self._fill_think_menu(m)
+
+    def _fill_think_menu(self, m):
         self._menu_head(m, "Denken")
+        grp = []
         cur = self.profile().get("thinking", "standard")
         for val, label in (("standard", "Standard (wie Server)"), ("an", "💭 an"), ("aus", "aus – schneller")):
             self._menu_choice(m, grp, label, cur == val, lambda _=False, v=val: self._meta_think(v))
@@ -2766,6 +3223,10 @@ class MainWindow(QMainWindow):
             prof["thinking"] = val
             C.save_config(self.cfg)
         self._update_meta()
+        if self.ctrl:                       # Popup und großes Fenster gleich halten
+            for w in (self.ctrl.main, self.ctrl.popup):
+                if w is not None and w is not self:
+                    w._update_meta()
         self.input.setFocus()
 
     # --- /Befehle ---
@@ -2784,6 +3245,8 @@ class MainWindow(QMainWindow):
         ("/undo", ("/rückgängig",), "", "Letzte Dateiänderung rückgängig machen"),
         ("/merk", ("/remember",), "<Text>", "Etwas dauerhaft ins Gedächtnis schreiben"),
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
+        ("/modus", ("/mode", "/freigabe"), "[fragen|dateien|alles|lesen]",
+         "Freigabe-Modus: immer fragen, Dateien automatisch, nicht mehr fragen, nur lesen"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
         ("/gross", ("/big", "/fenster"), "", "Chat im großen Fenster öffnen"),
         ("/einstellungen", ("/settings",), "", "Einstellungen öffnen"),
@@ -2805,6 +3268,8 @@ class MainWindow(QMainWindow):
             return [n for n, _ in speech.piper_voices()]
         if cmd == "/denken":
             return ["an", "aus", "standard"]
+        if cmd == "/modus":
+            return [k for k, _, _ in PERM_MODES]
         if cmd == "/modell":
             return [self.cb_model.itemText(i) for i in range(self.cb_model.count())]
         return []
@@ -2958,6 +3423,16 @@ class MainWindow(QMainWindow):
                                         "\n\nLöschen: „lösche Aufgabe <id>“ schreiben.")
         elif name == "/screenshot":
             self.take_screenshot(arg)
+        elif name == "/modus":
+            alias = {"frag": "fragen", "ask": "fragen", "datei": "dateien", "files": "dateien", "auto": "alles",
+                     "yolo": "alles", "immer": "alles", "lese": "lesen", "read": "lesen", "plan": "lesen"}
+            a = arg.lower().strip()
+            mode = a if a in PERM_LABEL else next((v for k, v in alias.items() if a.startswith(k)), None) if a else None
+            if not mode:
+                cur = self.cfg["settings"].get("perm_mode", "fragen")
+                self._info(f"Freigabe-Modus: {PERM_LABEL.get(cur)} – /modus fragen|dateien|alles|lesen")
+            else:
+                self.set_perm_mode(mode)
         elif name == "/denken":
             prof = self.profile()
             cur = prof.get("thinking", "standard")
@@ -2971,8 +3446,8 @@ class MainWindow(QMainWindow):
             if not arg:
                 self._info("Was soll ich mir merken? /merk <Text>")
                 return True
-            m = memory.add(arg)
-            self._info(f"🧠 Gemerkt: {m['text'][:60]}")
+            m = memory.add(arg, kind="user")
+            self._info(f"🧠 Gemerkt (📌 Über dich): {m['text'][:60]}")
         elif name == "/stop":
             self.stop()
             self.speaker.stop()
@@ -3021,8 +3496,36 @@ class MainWindow(QMainWindow):
         self._finished()
         self._estimate()
 
+    def _suggest(self, kind, value):
+        """Klick auf eine Vorschlagskarte im leeren Chat."""
+        if kind == "open":
+            for it in self._chat_items():
+                if it.data(Qt.UserRole) == value:
+                    self.chat_list.setCurrentItem(it)
+                    break
+            return
+        self.input.setPlainText(value)
+        cur = self.input.textCursor()
+        cur.movePosition(cur.MoveOperation.End)
+        self.input.setTextCursor(cur)
+        self.input.setFocus()
+        if kind == "send":
+            self.send()
+
+    def _poke_fx(self):
+        """Aktivität: angehaltene Animationen (Leuchtrahmen) kurz wieder laufen lassen."""
+        shell = self.centralWidget()
+        if isinstance(shell, PopupShell):
+            shell.glow.poke()
+
     def redraw(self, force_bottom=False):
+        if self.agent is not None:
+            self._poke_fx()                   # Leuchtrahmen dreht, solange eine Antwort läuft
         msgs = self.chat["messages"] if self.chat else []
+        if not msgs and hasattr(self, "chat_list"):     # „Weitermachen“-Karte: zuletzt benutzter anderer Chat
+            cur = self.chat["id"] if self.chat else None
+            self.view.resume = next(((it.data(Qt.UserRole), it.text()) for it in self._chat_items()
+                                     if it.data(Qt.UserRole) != cur and it.text() != "Neuer Chat"), None)
         live = self.agent.live if self.agent else None
         if force_bottom:
             self.view.scroll_bottom()
@@ -3068,6 +3571,8 @@ class MainWindow(QMainWindow):
             glow.sync()
 
     def changeEvent(self, e):
+        if e.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._used_at = time.monotonic()
         # Popup schließt sich, sobald man daneben klickt (wie das Lautstärke-Popup)
         if self.popup and e.type() == QEvent.ActivationChange:
             if self.isActiveWindow():
@@ -3093,11 +3598,14 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, e):
         self._was_active = False
+        self._used_at = time.monotonic()
         super().showEvent(e)
         QTimer.singleShot(0, self._place_chat_more)
 
     def hideEvent(self, e):
         self._hidden_at = time.monotonic()
+        if self.isActiveWindow():
+            self._used_at = time.monotonic()
         if self.chat and self.chat["messages"] and not self.agent:
             C.save_chat(self.chat)
         super().hideEvent(e)

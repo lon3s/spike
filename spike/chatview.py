@@ -2,14 +2,16 @@
 import html
 import json
 import math
+import os
 import re
 import time
+import traceback
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QPropertyAnimation, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QKeySequence, QPainter, QRadialGradient, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
-    QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QVBoxLayout, QWidget, QGraphicsOpacityEffect, QGridLayout,
 )
 
 from .theme import is_dark, md_html
@@ -105,6 +107,26 @@ def content_widget(text, c):
     return w
 
 
+_THUMBS = {}
+
+
+def _thumb(path):
+    """Vorschaubild 220×160, zwischengespeichert (volles Einlesen großer Screenshots kostete ~0,3 s pro Bild)."""
+    from PySide6.QtGui import QPixmap
+    from .attachments import _file_key, load_scaled
+    key = _file_key(path)
+    if key is None:
+        return None
+    if key not in _THUMBS:
+        img = load_scaled(path, 440, 320)          # doppelt so groß laden, dann sauber verkleinern
+        if img.isNull():
+            return None
+        if len(_THUMBS) > 200:
+            _THUMBS.clear()
+        _THUMBS[key] = QPixmap.fromImage(img.scaled(220, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    return _THUMBS[key]
+
+
 def attachment_row(atts, c):
     """Bilder als Vorschau, Dateien als Chips (unter der Nutzer-Nachricht)."""
     from PySide6.QtGui import QPixmap, QDesktopServices
@@ -115,10 +137,10 @@ def attachment_row(atts, c):
     lay.setSpacing(6)
     for a in atts:
         if a.get("kind") == "image":
-            pm = QPixmap(a["path"])
+            pm = _thumb(a["path"])
             lb = QLabel()
-            if not pm.isNull():
-                lb.setPixmap(pm.scaled(220, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if pm is not None:
+                lb.setPixmap(pm)
             else:
                 lb.setText("🖼 (Bild fehlt)")
             lb.setToolTip(f"{a.get('name')} – Doppelklick öffnet")
@@ -709,6 +731,93 @@ def role_label(text):
     return lb
 
 
+class SuggestCard(QFrame):
+    """Vorschlagskarte im leeren Chat (klickbar)."""
+    def __init__(self, icon, title, text, on_click):
+        super().__init__()
+        self.setObjectName("SuggestCard")
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.on_click = on_click
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(12)
+        ic = QLabel(icon)
+        ic.setObjectName("SuggestIcon")
+        lay.addWidget(ic, 0, Qt.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        t = QLabel(title)
+        t.setObjectName("SuggestTitle")
+        d = QLabel(text)
+        d.setObjectName("SuggestText")
+        d.setWordWrap(True)
+        col.addWidget(t)
+        col.addWidget(d)
+        lay.addLayout(col, 1)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()) and self.on_click:
+            self.on_click()
+
+
+def _greeting(name):
+    h = time.localtime().tm_hour
+    g = ("Gute Nacht" if h < 5 else "Guten Morgen" if h < 11 else "Hallo" if h < 17
+         else "Guten Abend" if h < 23 else "Gute Nacht")
+    return f"{g}, {name}" if name else g
+
+
+def welcome_big(c, name, resume, on_suggest):
+    """Leerer Chat im großen Fenster: Begrüßung + Vorschlagskarten."""
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(0, 70, 0, 0)
+    lay.setSpacing(6)
+    t = QLabel(_greeting(name))
+    t.setObjectName("WelcomeTitle")
+    t.setAlignment(Qt.AlignCenter)
+    s = QLabel("Womit fangen wir an?")
+    s.setObjectName("WelcomeSub")
+    s.setAlignment(Qt.AlignCenter)
+    lay.addWidget(t)
+    lay.addWidget(s)
+    lay.addSpacing(26)
+    cards = [
+        ("📂", "Datei finden", "Sag mir den Namen oder worum es geht – ich suche überall",
+         lambda: on_suggest("fill", "Finde die Datei: ")),
+        ("🖥", "System prüfen", "Speicherplatz, RAM, GPU und anstehende Updates",
+         lambda: on_suggest("send", "Prüfe meinen PC kurz: freier Speicherplatz, RAM, GPU-Auslastung und ob "
+                                    "Updates anstehen. Fasse es knapp zusammen.")),
+        ("✍", "Text verbessern", "Rechtschreibung und Stil glätten, Inhalt bleibt",
+         lambda: on_suggest("fill", "Verbessere diesen Text (Rechtschreibung und Stil, Inhalt beibehalten):\n\n")),
+    ]
+    if resume:
+        cid, title = resume
+        cards.append(("↩", "Weitermachen", f"„{title[:60]}“ fortsetzen", lambda: on_suggest("open", cid)))
+    else:
+        cards.append(("💡", "Idee ausarbeiten", "Gemeinsam einen Plan oder ein Konzept entwickeln",
+                      lambda: on_suggest("fill", "Hilf mir, diese Idee auszuarbeiten: ")))
+    grid_w = QWidget()
+    grid_w.setMaximumWidth(640)
+    grid = QGridLayout(grid_w)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setSpacing(10)
+    for i, (ic, title, text, fn) in enumerate(cards):
+        grid.addWidget(SuggestCard(ic, title, text, fn), i // 2, i % 2)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(grid_w, 100)
+    row.addStretch(1)
+    lay.addLayout(row)
+    hint = QLabel("Modell und Profil oben in der Mitte · / für Befehle · F1 = Hilfe")
+    hint.setObjectName("Muted")
+    hint.setAlignment(Qt.AlignCenter)
+    lay.addSpacing(14)
+    lay.addWidget(hint)
+    return w
+
+
 def welcome(c, compact=False):
     w = QWidget()
     lay = QVBoxLayout(w)
@@ -724,6 +833,20 @@ def welcome(c, compact=False):
     lay.addWidget(t)
     lay.addWidget(s)
     return w
+
+
+def _fade_in(w, ms=220):
+    """Sanftes Einblenden; der Effekt wird danach wieder entfernt (kostet sonst Leistung)."""
+    eff = QGraphicsOpacityEffect(w)
+    eff.setOpacity(0.0)
+    w.setGraphicsEffect(eff)
+    anim = QPropertyAnimation(eff, b"opacity", w)
+    anim.setDuration(ms)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.OutCubic)
+    anim.finished.connect(lambda: w.setGraphicsEffect(None))
+    anim.start()
 
 
 class ChatView(QScrollArea):
@@ -745,7 +868,7 @@ class ChatView(QScrollArea):
         self.column.setMaximumWidth(MAX_W)
         self.col = QVBoxLayout(self.column)
         self.col.setContentsMargins(6, 6, 6, 6)
-        self.col.setSpacing(10)
+        self.col.setSpacing(14)
         self.col.addStretch(1)
         outer.addStretch(1)
         outer.addWidget(self.column, 100)
@@ -760,17 +883,49 @@ class ChatView(QScrollArea):
         self.on_ask = None      # fn([gewählte Möglichkeiten]) – Antwort auf eine ask_user-Rückfrage
         self.on_speak = None    # fn(text) – 🔊 unter der letzten Antwort
         self.on_undo = None     # fn(tool_call_id) – ↶ an einer Diff-Karte
+        self.on_suggest = None  # fn(kind, wert) – Vorschlagskarte im leeren Chat ("fill"/"send"/"open")
+        self.user_name = ""
+        self.resume = None      # (chat_id, titel) – „Weitermachen“-Karte
         self._stick = True
         self.verticalScrollBar().rangeChanged.connect(self._range_changed)
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
+        # SPIKE_DEBUG=1 → ~/.cache/spike/scroll.log: wann und warum das Mitscrollen ausgeht
+        self._dbg = None
+        if os.environ.get("SPIKE_DEBUG"):
+            d = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "spike")
+            os.makedirs(d, exist_ok=True)
+            self._dbg = open(os.path.join(d, "scroll.log"), "a", buffering=1)
+            self._last_input = ("-", 0.0)
+            self.viewport().installEventFilter(self)
+            self.verticalScrollBar().installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if getattr(self, "_dbg", None) and ev.type() in (QEvent.Wheel, QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.KeyPress):
+            if ev.type() != QEvent.MouseMove or ev.buttons():
+                self._last_input = (ev.type().name, time.monotonic())
+        return super().eventFilter(obj, ev)
+
+    def _log(self, msg):
+        if self._dbg:
+            kind, t = self._last_input
+            self._dbg.write(f"{time.strftime('%H:%M:%S')} {msg} | letzte Eingabe: {kind} vor "
+                            f"{time.monotonic() - t:.1f}s | viewport={self.viewport().height()}\n")
 
     def _scrolled(self, v):
         sb = self.verticalScrollBar()
+        was = self._stick
         self._stick = v >= sb.maximum() - 40
+        if self._dbg and was and not self._stick:
+            stack = " <- ".join(f"{f.name}:{f.lineno}" for f in reversed(traceback.extract_stack()[:-1][-8:]))
+            self._log(f"AUS value={v} max={sb.maximum()} page={sb.pageStep()} stack={stack}")
+        elif self._dbg and not was and self._stick:
+            self._log(f"AN value={v} max={sb.maximum()}")
 
     def _range_changed(self, _min, mx):
         if self._stick:
             self.verticalScrollBar().setValue(mx)
+        elif self._dbg:
+            self._log(f"range max={mx} value={self.verticalScrollBar().value()} (steht, nicht angeheftet)")
 
     def scroll_bottom(self):
         self._stick = True
@@ -784,6 +939,10 @@ class ChatView(QScrollArea):
         tmsgs = {m.get("tool_call_id"): m for m in messages if m["role"] == "tool"}
         specs, prev = [], None
         if not messages and live is None:
+            if not compact and self.on_suggest:
+                name, resume = self.user_name, self.resume
+                return [(("welcome-big", theme, name, resume, _greeting(name)),
+                         lambda: welcome_big(c, name, resume, self.on_suggest))]
             return [(("welcome", theme, compact), lambda: welcome(c, compact))]
         for i, m in enumerate(messages):
             if summary_at and i == summary_at:
@@ -813,7 +972,7 @@ class ChatView(QScrollArea):
                               lambda t=t, a=avail, atts=atts: user_bubble(t, c, compact, a, atts)))
             elif r == "assistant":
                 if prev in (None, "user"):
-                    specs.append((("lbl", i, theme), lambda: role_label("ASSISTENT")))
+                    specs.append((("lbl", i, theme), lambda: role_label("✦  spike")))
                 if m.get("_reasoning"):
                     rs = m["_reasoning"]
                     specs.append((("r", i, hash(rs), theme), lambda rs=rs: reasoning_label(rs)))
@@ -865,7 +1024,7 @@ class ChatView(QScrollArea):
             specs.append((("speak", len(messages), hash(txt), theme), lambda txt=txt: self._speak_row(txt)))
         if live is not None:
             if prev in (None, "user"):
-                specs.append((("lbl-live", theme), lambda: role_label("ASSISTENT")))
+                specs.append((("lbl-live", theme), lambda: role_label("✦  spike")))
             rs, ct = live.get("reasoning") or "", live.get("content") or ""
             if rs:
                 specs.append((("lr", theme), lambda: self._make_live("rs", c)))
@@ -925,10 +1084,13 @@ class ChatView(QScrollArea):
             w.hide()               # sofort weg, nicht erst beim späteren Löschen
             w.deleteLater()
         self.blocks = self.blocks[:n]
+        fade = n > 0 and 0 < len(specs) - n <= 3        # nur neu hinzukommende Blöcke, nicht beim Chat-Laden
         for key, factory in specs[n:]:
             w = factory()
             self.col.insertWidget(self.col.count() - 1, w)   # vor dem Stretch
             self.blocks.append((key, w))
+            if fade and w.graphicsEffect() is None and not isinstance(w, (LiveText, TypingDots)):
+                _fade_in(w)
         self.setUpdatesEnabled(True)
         alive = {id(w) for _, w in self.blocks}
         self.live_widgets = {k: w for k, w in self.live_widgets.items() if id(w) in alive}

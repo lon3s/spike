@@ -9,17 +9,25 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   &nbsp;
   <img src="docs/screenshot-popup.png" alt="spike – Tray-Popup mit Leuchtrahmen" width="28%">
 </p>
+<p align="center">
+  <img src="docs/screenshot-start.png" alt="spike – Start mit Vorschlagskarten und Knotenfeld" width="68%">
+</p>
 
 ## Funktionen
 
 - **Mehrere Server und APIs**: Endpunkte mit IP:Port oder URL und optionalem API-Key anlegen, im Chat umschalten,
   Modelle werden automatisch vom Server geladen.
+- **Großes Fenster**: Seitenleiste mit Suche (auch im Inhalt der Chats) und Gruppen (Heute, Gestern, Letzte 7 Tage …),
+  einklappbar zur Symbolleiste (Strg+B). Oben ein Chip „Modell · Profil ▾“ für Modell, Server, Profil und Denken.
+  Die Eingabe ist eine Karte mit Chips für 📎, 💭 Denken, Freigabe-Modus, Kontext und Status. Ein leerer Chat
+  begrüßt dich mit Vorschlagskarten (Datei finden, System prüfen, Text verbessern, letzten Chat fortsetzen).
 - **Designs**: System (hell/dunkel), Dunkel, Hell, Cyberpunk, Matrix (Monospace-Schrift), Solarized dunkel/hell, Nord,
   Dracula, Gruvbox – unter ⚙ → Design. Jedes Design bringt passende Farben für den Popup-Leuchtrahmen mit.
-- **Hintergrund-Effekt** (⚙ → Hintergrund-Effekt): Röhrenmonitor mit Scanlines, gewölbten Rändern, rollendem
-  Bildwiederhol-Balken und gelegentlichem Flackern – automatisch beim Design Matrix oder immer. Kostet ~1–2 % eines Kerns.
+- **Hintergrund-Effekt** (⚙ → Hintergrund-Effekt): **Röhrenmonitor** mit Scanlines, gewölbten Rändern und einem
+  Bildwiederhol-Balken, der hinter dem Chat durchläuft, dazu gelegentliches leichtes Flackern (~1–2 % eines Kerns).
+  Oder **Knotenfeld**: wandernde Knoten mit Verbindungen und Signalen, die Maus zieht Knoten an – nur im Chatbereich.
 - **Eingabefeld-Stile** (⚙ → Eingabefeld): Standard, Neon-Glow (umlaufender Farbverlauf, pulsiert, leuchtet beim Senden auf), Minimal-Linie (wächst beim Fokus, Lichtpunkt folgt dem
-  Cursor) und Glas (Lichtreflex). Animationen laufen nur, solange das Feld den Fokus hat.
+  Cursor) und Glas (Lichtreflex). Animationen laufen nur kurz beim Fokus und Tippen – im Leerlauf braucht spike keine CPU.
 - **Profile**: pro Vorgang eigener System-Prompt, Temperatur und Werkzeug-Auswahl (`{date}` wird ersetzt).
 - **Werkzeuge**: `web_search` (DuckDuckGo), `fetch_url`, Browser (Playwright: öffnen, lesen, klicken, tippen,
   zurück), `run_shell`, `read_file`, `list_dir`, `write_file`. Shell-Befehle und Schreibzugriffe muss man bestätigen.
@@ -31,14 +39,16 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   - Ältere Werkzeug-Ausgaben werden automatisch gekürzt.
   - Das „Denken“ (`reasoning_content`) wird nur angezeigt und nicht zurückgeschickt.
   - Wird der Kontext voll, fallen die ältesten Runden weg.
-  - Die Kontextgröße kommt vom Server (`/props`), die Auslastung zeigt die Statusleiste.
+  - Die Kontextgröße kommt vom Server (`/props`), die Auslastung steht unter dem Eingabefeld.
 - **Langer Verlauf** (z. B. beim Programmieren): Ab 70 % Auslastung fasst das Modell den älteren Teil selbst zusammen,
   auch mitten in einer Werkzeug-Kette. Die neuesten ~30 % bleiben wörtlich, Ziel, Pfade und offene Punkte bleiben in der
   Zusammenfassung erhalten. Einstellbar unter ⚙ → Gedächtnis & Kontext.
-- **Gedächtnis**: „Merk dir …“ speichert kurze Fakten (`~/.local/share/spike/memory.json`). Pro Chat geht nur ein
-  begrenzter Auszug in den Prompt (Standard 1500 Zeichen): angeheftete Einträge, dann die zur ersten Nachricht passenden,
-  dann die neuesten. Den Rest sucht das Modell bei Bedarf mit `memory_search`. Der Auszug bleibt pro Chat gleich,
-  damit der Prompt-Cache von llama.cpp greift. Einträge verwalten: ⚙ → Gedächtnis & Kontext.
+- **Gedächtnis** (`~/.local/share/spike/memory.json`) mit zwei Arten: **📌 Über dich** (Name, Webseiten, Vorlieben –
+  in jedem Chat bekannt) und **🗂 Arbeitsnotizen** (Ordner, Ergebnisse einer Aufgabe – nur, wenn die erste Nachricht
+  ausdrücklich dazu passt). Ein neuer Chat ist so ein frischer Start, knüpfst du an („mach weiter mit dem Album“),
+  findet das Modell die Notiz mit `memory_search`. Gesucht wird nach ganzen Wörtern („Tag“ findet nicht „Tags“).
+  Der Auszug (Standard 1500 Zeichen) bleibt pro Chat gleich, damit der Prompt-Cache von llama.cpp greift.
+  Einträge verwalten und Art umschalten: ⚙ → Gedächtnis & Kontext.
 - **Dateisuche** (`find_files`, ohne Bestätigung): Systemindex (`plocate`), frische Suche im Home-Ordner (`fd`) und ein
   eigener Index für `/mnt` (NAS, Laufwerke) in `~/.cache/spike/mnt.db`. spike erneuert ihn täglich im Hintergrund
   (niedrigste Priorität, abschaltbar unter ⚙ → Allgemein, sofort mit `/index`). Suche dauert so ~0,1 s.
@@ -180,7 +190,8 @@ spike hat ein Symbol unten rechts in der Taskleiste (Systemabschnitt):
 - **Linksklick**: Das Chat-Popup erscheint unten rechts. Ein Klick daneben schließt es wieder.
 - **Rechtsklick**: Menü mit Großes Fenster, Neuer Chat, Markierten Text bearbeiten, Handy verbinden, Hilfe und Beenden.
 - **Mittelklick**: großes Fenster.
-- Im Popup öffnet ⤢ denselben Chat im großen Fenster, Esc schließt das Popup.
+- Im Popup öffnet ⤢ denselben Chat im großen Fenster, Esc schließt das Popup. Umgekehrt macht das Popup mit dem
+  Chat weiter, an dem du zuletzt im großen Fenster gearbeitet hast.
 - 📌 im Popup heftet es an: Es bleibt offen, auch wenn du woanders klickst. Ein zweiter Klick löst es wieder.
 - Das große Fenster schließen beendet spike nicht, es läuft im Tray weiter. Beenden geht über das Tray-Menü.
 - Es läuft immer nur ein spike. `spike` holt das Fenster nach vorn, `spike --popup` schaltet das Popup um,
@@ -242,6 +253,13 @@ wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Hei
   das Modell.
 - **Denken an/aus** pro Profil (⚙ → Profile oder `/denken an|aus`): Aus ist bei einfachen Aufgaben deutlich schneller
   (Dateisuche: 9 s statt 55 s). Wirkt bei llama.cpp mit Qwen & Co. (`enable_thinking`).
+- **Freigabe-Modus** (Chip unter dem Eingabefeld, im Popup das Symbol in der Infozeile, `/modus`):
+  🛡 **Fragen** (Standard, vor jeder Aktion), ✎ **Dateien auto** (Dateien ohne Rückfrage, Befehle weiter fragen),
+  ⚡ **Yolo** (nichts mehr fragen – Vorsicht) und 👁 **Nur lesen** (nichts ausführen, nur vorschlagen).
+  Geplante Aufgaben lehnen Aktionen weiterhin ab, weil dann niemand zuschaut.
+- **Nachschreiben**: Während spike arbeitet, einfach weiterschreiben und Enter – die Nachricht wird vorgemerkt (⏳)
+  und nach dem nächsten Werkzeug-Schritt mitgegeben bzw. nach der Antwort gesendet. Klick auf ⏳ holt sie zurück.
+- Jeder Chat merkt sich seinen eigenen Arbeitsordner (`cd`); ein neuer Chat startet im Home-Ordner.
 
 ### Befehle
 
@@ -261,6 +279,7 @@ wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Hei
 | `/undo` | letzte Dateiänderung rückgängig machen |
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
+| `/modus [fragen\|dateien\|yolo\|lesen]` | Freigabe-Modus wechseln |
 | `/stop` | Antwort abbrechen |
 | `/gross` | Chat im großen Fenster öffnen |
 | `/einstellungen` | Einstellungen |
@@ -269,7 +288,7 @@ wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Hei
 | `/hilfe` | Bedienungsanleitung (auch F1) |
 
 Im Popup und im Kompakt-Modus zeigt eine Zeile unter dem Eingabefeld die Kontext-Belegung und die Geschwindigkeit
-(live während der Antwort). Ein Klick auf den Modellnamen wechselt Modell oder Server, ein Klick aufs Profil wechselt
+(während der Antwort). Ein Klick auf den Modellnamen wechselt Modell oder Server, ein Klick aufs Profil wechselt
 Profil oder „Denken“, **?** öffnet die Hilfe.
 
 **Aussehen des Popups** (⚙ → Popup): Leuchtrahmen (Lauflicht oder Farbverlauf, Farben, Tempo, Breite) und
@@ -279,7 +298,7 @@ Durchsichtigkeit).
 
 - **F1**: Hilfe mit allen Funktionen, Tastenkürzeln und Befehlen.
 - Enter sendet, Shift+Enter macht eine neue Zeile, Strg+N startet einen neuen Chat, Esc stoppt.
-- **Strg+K**: Kompakt-Modus (nur Verlauf und Eingabe), **Strg+B**: Seitenleiste ein/aus, ◐: hell/dunkel.
+- **Strg+K**: Kompakt-Modus (nur Verlauf und Eingabe), **Strg+B**: Seitenleiste ein-/ausklappen, ◐: hell/dunkel.
 - „Stopp“ bricht die laufende Antwort oder Werkzeugkette ab.
 
 ## Lizenz

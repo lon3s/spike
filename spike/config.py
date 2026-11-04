@@ -105,6 +105,7 @@ DEFAULT_CONFIG = {
         "compact_at_percent": 70,                 # ab dieser Auslastung (vom nutzbaren Kontext)
         "compact_keep_percent": 30,               # so viel vom Ende bleibt wörtlich
         "python_timeout": 120,
+        "perm_mode": "fragen",                    # Freigaben: fragen | dateien | alles | lesen
         "attach_max_chars": 30000,                # so viel Text pro angehängter Datei
         # MCP-Server: [{"name", "command", "env": {}, "enabled": true, "confirm": "schreibend"|"immer"|"nie"}]
         "mcp_servers": [],
@@ -182,15 +183,22 @@ def new_chat(endpoint="", model="", profile="") -> dict:
     }
 
 
-def list_chats(archived: bool = False) -> list[dict]:
-    """Chats, neueste zuerst. archived=True liefert nur das Archiv, sonst nur die aktiven."""
+def list_chats(archived: bool = False, with_text: bool = False) -> list[dict]:
+    """Chats, neueste zuerst. archived=True liefert nur das Archiv, sonst nur die aktiven.
+    with_text=True: zusätzlich "text" (Titel + Nachrichten, klein geschrieben) für die Suche."""
     CHATS_DIR.mkdir(parents=True, exist_ok=True)
     out = []
-    for f in sorted(CHATS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    files = [(f, f.stat().st_mtime) for f in CHATS_DIR.glob("*.json")]
+    for f, mtime in sorted(files, key=lambda x: x[1], reverse=True):
         try:
             d = json.loads(f.read_text("utf-8"))
             if bool(d.get("archived")) == archived:
-                out.append({"id": d["id"], "title": d.get("title", d["id"])})
+                c = {"id": d["id"], "title": d.get("title", d["id"]), "mtime": mtime}
+                if with_text:
+                    parts = [c["title"]] + [str(m.get("_text") or m.get("content") or "")
+                                            for m in d.get("messages", []) if m.get("role") in ("user", "assistant")]
+                    c["text"] = "\n".join(parts)[:40000].lower()
+                out.append(c)
         except Exception:
             pass
     return out

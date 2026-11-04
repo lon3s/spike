@@ -22,8 +22,7 @@ THEMES = {
     },
     # Optionale Schlüssel: label (Anzeigename), dark (Schatten/Popup), popup (Popup-Fläche „grau“),
     # user_text (Schrift in der eigenen Sprechblase), font (Schriftfamilie), glow (Farben für den Popup-Rahmen),
-    # input (passender Stil der Eingabeleiste, wird beim Wählen im Dialog vorgeschlagen),
-    # fx (animierter Hintergrund-Effekt bei „Vom Design“, z. B. crt = Röhrenmonitor)
+    # input (passender Stil der Eingabeleiste, wird beim Wählen im Dialog vorgeschlagen)
     "cyberpunk": {
         "name": "cyberpunk", "label": "Cyberpunk", "dark": True,
         "bg": "#0b0218", "panel": "#140630", "panel2": "#1e0b44", "border": "#3d1a6e",
@@ -40,7 +39,7 @@ THEMES = {
         "user_code": "#022a0c", "code": "#000400", "chip": "#03170a", "danger": "#ff5050", "sel": "#073814",
         "popup": "#010e03", "user_text": "#d4ffdc",
         "font": "'JetBrains Mono', 'Fira Code', 'Hack', 'DejaVu Sans Mono', monospace",
-        "glow": ["#00ff41", "#008f11", "#b8ffc4"], "input": "neon", "fx": "crt",
+        "glow": ["#00ff41", "#008f11", "#b8ffc4"], "input": "neon",
     },
     "solarized": {
         "name": "solarized", "label": "Solarized dunkel", "dark": True,
@@ -102,11 +101,27 @@ def palette(c) -> QPalette:
 
 def qss(c) -> str:
     return f"""
-    QWidget {{ color: {c['text']}; font-size: 10.5pt;{f" font-family: {c['font']};" if c.get('font') else ""} }}
+    QWidget {{ color: {c['text']}; font-size: 10.5pt; {f" font-family: {c['font']};" if c.get('font') else ""} }}
     QMainWindow, QDialog {{ background: {c['bg']}; }}
     QMainWindow#Popup {{ background: transparent; }}
-    #Side {{ background: {c['panel']}; border-right: 1px solid {c['border']}; }}
-    #TopBar {{ background: {c['bg']}; border-bottom: 1px solid {c['border']}; }}
+    #Side, #Rail {{ background: {c['panel']}; border: none; }}
+    #TopBar {{ background: {c['bg']}; border: none; }}
+    QToolButton#TopChip {{ background: transparent; border: 1px solid transparent; border-radius: 12px;
+                          padding: 5px 14px; font-size: 10.5pt; font-weight: 600; color: {c['text']}; }}
+    QToolButton#TopChip:hover {{ background: {c['panel2']}; border-color: {c['border']}; }}
+    QToolButton#TopChip::menu-indicator {{ image: none; width: 0; }}
+    QLineEdit#SideSearch {{ background: {c['bg']}; border: 1px solid transparent; border-radius: 10px;
+                           padding: 6px 10px; color: {c['text']}; }}
+    QLineEdit#SideSearch:focus {{ border-color: {c['accent']}; }}
+    QPushButton#NewChat {{ background: transparent; border: 1px solid {c['border']}; border-radius: 10px;
+                          padding: 7px 10px; text-align: left; font-weight: 600; }}
+    QPushButton#NewChat:hover {{ background: {c['panel2']}; border-color: {c['accent']}; }}
+    QPushButton#ChipBtn {{ background: transparent; border: 1px solid {c['border']}; border-radius: 13px;
+                          padding: 3px 11px; font-size: 9pt; color: {c['muted']}; }}
+    QPushButton#ChipBtn:hover {{ background: {c['panel2']}; color: {c['text']}; }}
+    QPushButton#ChipBtn::menu-indicator {{ image: none; width: 0; }}
+    QPushButton#ChipBtn[warn="true"] {{ color: {c.get('danger', '#e5484d')}; border-color: {c.get('danger', '#e5484d')}; }}
+    QLabel#StatusText {{ color: {c['muted']}; font-size: 8.5pt; }}
     #Composer {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 20px; }}
     QScrollArea#Chat, #ChatInner, #ChatColumn {{ background: {c['bg']}; border: none; }}
     #UserBubble {{ background: qlineargradient(x1:0, y1:0, x2:0.35, y2:1, stop:0 {c['user_top']},
@@ -122,8 +137,14 @@ def qss(c) -> str:
     #Chip {{ background: {c['chip']}; border: 1px solid {c['border']}; border-radius: 12px; }}
     #ChipText {{ font-size: 9pt; }}
     #Reasoning {{ color: {c['muted']}; font-size: 9pt; }}
-    #RoleLabel {{ color: {c['muted']}; font-size: 8.5pt; font-weight: 700; padding-top: 6px; }}
-    #WelcomeTitle {{ font-size: 22pt; font-weight: 700; }}
+    #RoleLabel {{ color: {c['accent']}; font-size: 9pt; font-weight: 600; padding-top: 10px; }}
+    #WelcomeTitle {{ font-size: 24pt; font-weight: 700; }}
+    #WelcomeSub {{ color: {c['muted']}; font-size: 12pt; }}
+    #SuggestCard {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 14px; }}
+    #SuggestCard:hover {{ background: {c['panel2']}; border-color: {c['accent']}; }}
+    #SuggestTitle {{ font-weight: 600; background: transparent; }}
+    #SuggestText {{ color: {c['muted']}; font-size: 9pt; background: transparent; }}
+    #SuggestIcon {{ font-size: 15pt; background: transparent; }}
     #PopupFrame {{ background: {c['bg']}; border: 1px solid {c['border']}; border-radius: 18px; }}
     #PopupFrame #Root, #PopupFrame #TopBar, #PopupFrame QScrollArea#Chat, #PopupFrame #ChatInner,
     #PopupFrame #ChatColumn, #PopupFrame QScrollArea#Chat > QWidget {{ background: transparent; }}
@@ -181,6 +202,7 @@ def qss(c) -> str:
     QToolButton#MetaBtn {{ color: {c['muted']}; font-size: 8.5pt; background: transparent; border: none;
                           border-radius: 6px; padding: 1px 6px; }}
     QToolButton#MetaBtn:hover {{ color: {c['text']}; background: {c['panel2']}; }}
+    QPushButton#Icon[warn="true"], QToolButton#MetaBtn[warn="true"] {{ color: {c.get('danger', '#e5484d')}; }}
     QToolButton#MetaBtn::menu-indicator {{ image: none; width: 0; }}
     QMenu {{ background: {c['panel']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 8px;
             padding: 4px; }}
@@ -202,6 +224,11 @@ _BODY = re.compile(r"<body[^>]*>(.*)</body>", re.S)
 _PRE_RUN = re.compile(r"((?:<pre[^>]*>.*?</pre>\s*)+)", re.S)
 
 
+# moderne Oberflächen-Schrift: Inter, sonst Adwaita Sans (basiert auf Inter), sonst Noto Sans
+UI_FONTS = ["Inter", "Adwaita Sans", "Noto Sans"]     # als App-Grundschrift gesetzt (ui.apply_theme)
+_P_STYLE = re.compile(r'<(p|li) style="')
+
+
 @lru_cache(maxsize=1024)
 def md_html(text: str, code_bg: str) -> str:
     d = QTextDocument()
@@ -210,6 +237,7 @@ def md_html(text: str, code_bg: str) -> str:
     body = m.group(1) if m else html.escape(text)
     body = body.replace("font-family:'monospace';", f"font-family:'monospace'; background-color:{code_bg};")
     body = body.replace("<pre ", '<pre style="white-space: pre-wrap;" ')   # lange Code-Zeilen umbrechen
+    body = _P_STYLE.sub(lambda mm: f'<{mm.group(1)} style="line-height:140%; ', body)   # luftiger lesbar
     return _PRE_RUN.sub(
         lambda mm: f'<table width="100%" cellpadding="10" cellspacing="0" bgcolor="{code_bg}" '
                    f'style="margin-top:4px; margin-bottom:6px;"><tr><td>{mm.group(1)}</td></tr></table>',

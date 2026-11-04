@@ -117,11 +117,46 @@ def file_text(att: dict, max_chars: int) -> str:
     return f"📎 Datei {att['name']}{where}:\n```{lang}\n{text}\n```{note}"
 
 
+_URL_CACHE = {}             # (pfad, mtime, größe) → data-URL; Kodieren kostet pro Bild ~0,3 s
+
+
+def _file_key(path):
+    try:
+        st = Path(path).stat()
+        return (str(path), st.st_mtime, st.st_size)
+    except OSError:
+        return None
+
+
+def load_scaled(path: str, max_w: int, max_h: int):
+    """Bild gleich verkleinert einlesen (QImageReader dekodiert JPEGs direkt kleiner – viel schneller)."""
+    from PySide6.QtCore import QSize, Qt
+    from PySide6.QtGui import QImage, QImageReader
+    r = QImageReader(path)
+    r.setAutoTransform(True)
+    sz = r.size()
+    if sz.isValid() and (sz.width() > max_w or sz.height() > max_h):
+        r.setScaledSize(sz.scaled(QSize(max_w, max_h), Qt.KeepAspectRatio))
+    img = r.read()
+    return img if not img.isNull() else QImage()
+
+
 def data_url(path: str) -> str:
-    """Bild verkleinern (längste Seite MAX_SIDE) und als data-URL liefern."""
+    """Bild verkleinern (längste Seite MAX_SIDE) und als data-URL liefern (zwischengespeichert)."""
+    key = _file_key(path)
+    if key and key in _URL_CACHE:
+        return _URL_CACHE[key]
+    url = _data_url(path)
+    if key:
+        if len(_URL_CACHE) > 64:
+            _URL_CACHE.clear()
+        _URL_CACHE[key] = url
+    return url
+
+
+def _data_url(path: str) -> str:
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
-    from PySide6.QtGui import QImage
-    img = QImage(path)
+    img = load_scaled(path, MAX_SIDE, MAX_SIDE)
     if img.isNull():
         raw = Path(path).read_bytes()
         return "data:image/png;base64," + base64.b64encode(raw).decode()

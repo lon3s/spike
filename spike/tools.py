@@ -88,15 +88,22 @@ TOOL_SPECS = {
     "python_run": _fn("python_run", "Führt Python-3-Code aus (Nutzer bestätigt) und gibt stdout/stderr zurück. "
                       "Für Rechnen, Daten auswerten, Dateien umwandeln. Ergebnisse mit print() ausgeben.",
                       {"code": {"type": "string"}}, ["code"]),
-    "pc": _fn("pc", "Steuert den Linux-PC (KDE). Aktionen: open (Datei/Ordner/URL/Programm öffnen, value=Pfad oder "
-              "URL), clipboard_get, clipboard_set (value=Text), notify (value=Text), volume (value=leer zum Abfragen, "
+    "pc": _fn("pc", "Steuert den Linux-PC (KDE). Aktionen: open (value = Datei/Ordner/URL öffnen ODER Programm "
+              "starten per Name, z. B. chromium, dolphin, kate; mit program = Datei/URL in genau diesem Programm "
+              "öffnen, z. B. value=https://youtube.com program=chromium), clipboard_get, clipboard_set (value=Text), notify (value=Text), volume (value=leer zum Abfragen, "
               "50 / +5 / -5 / mute), media (value=play-pause|next|previous|stop|status).",
               {"action": {"type": "string", "enum": ["open", "clipboard_get", "clipboard_set", "notify",
                                                      "volume", "media"]},
-               "value": {"type": "string"}}, ["action"]),
-    "memory_save": _fn("memory_save", "Merkt sich dauerhaft einen kurzen Fakt über den Nutzer/seine Systeme "
-                       "(ein Satz). Nur Wichtiges, das in späteren Chats nützt; nichts Vertrauliches.",
-                       {"fact": {"type": "string"}}, ["fact"]),
+               "value": {"type": "string"},
+               "program": {"type": "string", "description": "nur bei open: Programm, mit dem value geöffnet wird"}},
+              ["action"]),
+    "memory_save": _fn("memory_save", "Merkt sich dauerhaft einen kurzen Eintrag (ein Satz). Nur Wichtiges, das "
+                       "später nützt; nichts Vertrauliches.",
+                       {"fact": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["user", "note"],
+                                 "description": "user = Fakt über den Nutzer (immer bekannt); note = Arbeitsnotiz zu "
+                                                "einer Aufgabe/einem Ordner (nur bei Bedarf per memory_search)"}},
+                       ["fact"]),
     "memory_search": _fn("memory_search", "Durchsucht das Gedächtnis nach Stichworten (leer = neueste).",
                          {"query": {"type": "string"}}),
     "memory_delete": _fn("memory_delete", "Löscht einen Gedächtnis-Eintrag per id (z. B. wenn er falsch ist).",
@@ -125,6 +132,101 @@ TOOL_LABELS = {
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
     "ask_user": "Rückfrage mit Auswahl",
 }
+
+
+# ---------- Programme finden (.desktop-Starter und Befehle im PATH) ----------
+
+def _app_dirs():
+    home = Path.home()
+    dirs = [Path(os.environ.get("XDG_DATA_HOME", home / ".local/share"))]
+    dirs += [Path(d) for d in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":") if d]
+    dirs += [home / ".local/share/flatpak/exports/share", Path("/var/lib/flatpak/exports/share")]
+    seen, out = set(), []
+    for d in dirs:
+        a = d / "applications"
+        if a not in seen and a.is_dir():
+            seen.add(a)
+            out.append(a)
+    return out
+
+
+def _desktop_entries():
+    entries = {}
+    for base in _app_dirs():
+        for f in base.rglob("*.desktop"):
+            did = str(f.relative_to(base)).replace("/", "-")[:-len(".desktop")]
+            if did in entries:          # erste Fundstelle gewinnt (wie beim Desktop)
+                continue
+            info = {"id": did, "path": str(f), "name": "", "generic": "", "exec": "", "hidden": False,
+                    "names": [], "words": []}
+            try:
+                in_main = False
+                for line in f.read_text("utf-8", "replace").splitlines():
+                    line = line.strip()
+                    if line.startswith("["):
+                        in_main = line == "[Desktop Entry]"
+                        continue
+                    if not in_main or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    base_k = k.split("[", 1)[0]
+                    if k == "Name":
+                        info["name"] = v
+                    if base_k == "Name":                 # auch übersetzte Namen (Name[de]=Systemeinstellungen)
+                        info["names"].append(v.lower())
+                    elif base_k in ("GenericName", "Keywords"):
+                        info["words"] += [w.strip().lower() for w in v.split(";") if w.strip()]
+                    if k == "GenericName":
+                        info["generic"] = v
+                    elif k == "Exec":
+                        info["exec"] = v
+                    elif k in ("NoDisplay", "Hidden") and v.lower() == "true":
+                        info["hidden"] = True
+                    elif k == "Type" and v != "Application":
+                        info["hidden"] = True
+            except OSError:
+                continue
+            entries[did] = info
+    return list(entries.values())
+
+
+def _exec_name(e):
+    w = (e.get("exec") or "").split()
+    w = [x for x in w if x != "env" and "=" not in x]
+    return Path(w[0]).name.lower() if w else ""
+
+
+def find_app(name):
+    """Programm per Name finden: .desktop-Starter (Dateiname, Name, Startbefehl), sonst Befehl im PATH.
+    Gibt {"id", "name", "exe"} oder None zurück."""
+    q = name.strip().lower().removesuffix(".desktop")
+    if not q:
+        return None
+    entries = [e for e in _desktop_entries() if e["exec"]]
+    ranks = (
+        lambda e: e["id"].lower() == q,
+        lambda e: e["id"].lower().endswith("." + q),
+        lambda e: q in e["names"],
+        lambda e: _exec_name(e) == q,
+        lambda e: not e["hidden"] and any(q in n for n in e["names"]),
+        lambda e: not e["hidden"] and q in e["words"],
+        lambda e: not e["hidden"] and any(q in w for w in e["words"]),
+    )
+    for test in ranks:
+        hits = [e for e in entries if test(e)]
+        if hits:
+            hits.sort(key=lambda e: (e["hidden"], len(e["name"])))
+            e = hits[0]
+            return {"id": e["id"], "name": e["name"] or e["id"], "exe": shutil.which(_exec_name(e)) or ""}
+    exe = shutil.which(name.strip())
+    return {"id": "", "name": Path(exe).name, "exe": exe} if exe else None
+
+
+def similar_apps(name, limit=6):
+    q = name.strip().lower()[:4]
+    names = sorted({e["name"] for e in _desktop_entries() if not e["hidden"] and e["name"]
+                    and q and (any(q in n for n in e["names"]) or q in e["id"].lower())})
+    return names[:limit]
 
 
 # ---------- Rückgängig: Sicherung vor jeder Dateiänderung ----------
@@ -815,17 +917,10 @@ class ToolBox:
         p = subprocess.run(args, capture_output=True, text=True, input=input_text, timeout=timeout)
         return (p.stdout + p.stderr).strip(), p.returncode
 
-    def t_pc(self, action, value="", confirm=None):
-        value = (value or "").strip()
+    def t_pc(self, action, value="", program="", confirm=None):
+        value, program = (value or "").strip(), (program or "").strip()
         if action == "open":
-            if not value:
-                return "Fehler: value (Pfad oder URL) fehlt."
-            target = value if re.match(r"^[a-z]+://", value) else str(Path(value).expanduser())
-            if not confirm(f"Öffnen?\n\n{target}"):
-                return "Vom Nutzer abgelehnt."
-            subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
-            return f"Geöffnet: {target}"
+            return self._open(value, program, confirm)
         if action == "clipboard_get":
             out, rc = self._cmd(["wl-paste", "--no-newline"])
             return clip(out, self.limit) if rc == 0 else "Zwischenablage ist leer oder enthält keinen Text."
@@ -852,6 +947,40 @@ class ToolBox:
         if action == "media":
             return self._media(value or "status")
         return f"Fehler: unbekannte Aktion '{action}'."
+
+    # --- Öffnen: Datei/URL mit Standardprogramm, Programm per Name starten, oder Datei/URL mit Programm X ---
+    def _open(self, value, program, confirm):
+        if not value and not program:
+            return "Fehler: value (Pfad, URL oder Programmname) fehlt."
+        is_url = bool(re.match(r"^[a-z][a-z0-9+.-]*://", value)) or value.startswith(("mailto:", "www."))
+        if value.startswith("www."):
+            value = "https://" + value
+        path = Path(value).expanduser() if value and not is_url else None
+        exists = bool(path and path.exists())
+        if not program and value and not is_url and not exists and "/" not in value:
+            program, value = value, ""          # kein Pfad, keine URL → Programmname
+        target = value if is_url or not value else str(path)
+        if program:
+            app = find_app(program)
+            if not app:
+                return (f"Fehler: Programm „{program}“ nicht gefunden (weder Starter noch Befehl). "
+                        f"Ähnliche: {', '.join(similar_apps(program)) or '–'}")
+            label = f"{app['name']}" + (f" mit {target}" if target else "")
+            if not confirm(f"Programm starten?\n\n{label}"):
+                return "Vom Nutzer abgelehnt."
+            if app.get("id") and shutil.which("gtk-launch"):
+                cmd = ["gtk-launch", app["id"]] + ([target] if target else [])
+            else:
+                cmd = [app["exe"]] + ([target] if target else [])
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return f"Gestartet: {label}"
+        if not is_url and not exists:
+            return f"Fehler: {target} gibt es nicht."
+        if not confirm(f"Öffnen?\n\n{target}"):
+            return "Vom Nutzer abgelehnt."
+        subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return f"Geöffnet: {target}"
 
     def _media(self, what):
         qd = shutil.which("qdbus6") or shutil.which("qdbus")
@@ -897,17 +1026,19 @@ class ToolBox:
         return "Gelöscht." if scheduler.delete(id) else f"Keine Aufgabe mit id {id}."
 
     # --- Gedächtnis ---
-    def t_memory_save(self, fact, confirm=None):
+    def t_memory_save(self, fact, kind="note", confirm=None):
         if not self.settings.get("memory_enabled", True):
             return "Gedächtnis ist in den Einstellungen ausgeschaltet."
-        m = memory.add(fact)
-        return f"Gemerkt [{m['id']}]: {m['text']}"
+        m = memory.add(fact, kind=kind)
+        what = "Über dich" if m.get("kind") == "user" else "Arbeitsnotiz"
+        return f"Gemerkt als {what} [{m['id']}]: {m['text']}"
 
     def t_memory_search(self, query="", confirm=None):
         hits = memory.search(query)
         if not hits:
             return "Nichts gefunden."
-        return clip("\n".join(f"- [{m['id']}] {m['text']}" for m in hits), self.limit)
+        return clip("\n".join(f"- [{m['id']}]{'' if memory.is_always(m) else ' (Notiz)'} {m['text']}"
+                              for m in hits), self.limit)
 
     def t_memory_delete(self, id, confirm=None):
         return "Gelöscht." if memory.delete(id) else f"Kein Eintrag mit id {id}."
