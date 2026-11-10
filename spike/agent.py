@@ -7,6 +7,7 @@ import time
 from PySide6.QtCore import QObject, Signal
 
 from . import memory
+from .config import CONFIG_DIR
 from .client import complete, stream_chat
 from .context import budget, build_messages, estimate_tokens, pick_cut, summary_request
 from .tools import MEMORY_TOOLS, expand, specs_for
@@ -38,6 +39,46 @@ ASK_HOWTO = (
     "Möglichkeiten vor (multi=true, wenn mehrere zusammen passen; das steht dann schon auf der Karte). Frag nur, "
     "wenn es wirklich nötig ist – Einfaches entscheidest du selbst."
 )
+
+
+GIT_HOWTO = (
+    "Git (Werkzeug git) – arbeite wie ein sorgfältiger Entwickler:\n"
+    "1. Committe und pushe NUR, wenn der Nutzer es ausdrücklich will („committen“, „sichern“, „pushen“, "
+    "„pull es local“ …). Nach einer Änderung an Dateien nicht von selbst committen, sondern kurz anbieten.\n"
+    "2. Vorher immer git status und git diff ansehen: Was hat sich geändert? Gehört alles zusammen? "
+    "Fremde oder halbfertige Änderungen nicht einfach mitnehmen – dann mit files gezielt committen oder nachfragen.\n"
+    "3. Nichts Vertrauliches ins Repo: keine Passwörter, Tokens, Schlüssel, .env-Dateien. Auch keine großen oder "
+    "erzeugten Dateien (.venv, __pycache__, node_modules, Build-Ordner, Logs) – die gehören in .gitignore.\n"
+    "4. Commit-Nachricht auf Deutsch: erste Zeile kurz (höchstens ~70 Zeichen), sagt WAS sich ändert; bei Bedarf "
+    "nach einer Leerzeile ein, zwei Sätze WARUM. Keine Nachrichten wie „Update“ oder „Änderungen“.\n"
+    "5. Niemals force-push, keine Commits umschreiben, nichts löschen, ohne zu fragen.\n"
+    "6. Danach knapp melden: Commit-ID und Nachricht, wohin gepusht wurde. Bei Fehlern die Meldung zeigen und "
+    "erklären, nicht raten."
+)
+
+ANLEITUNGEN_DIR = CONFIG_DIR / "anleitungen"
+
+
+def anleitungen(limit=8000) -> str:
+    """Eigene Anleitungen des Nutzers (~/.config/spike/anleitungen/*.md) für den System-Prompt."""
+    try:
+        files = sorted(f for f in ANLEITUNGEN_DIR.glob("*.md") if not f.name.startswith("_"))
+    except OSError:
+        return ""
+    parts, used = [], 0
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not text:
+            continue
+        text = text[:max(0, limit - used)]
+        used += len(text)
+        parts.append(f"### {f.stem}\n{text}")
+        if used >= limit:
+            break
+    return ("## Anleitungen des Nutzers (halte dich daran)\n" + "\n\n".join(parts)) if parts else ""
 
 
 # Freigabe-Modi: wann der Nutzer vor einer Aktion (Befehl, Datei ändern, Python …) gefragt wird
@@ -168,8 +209,8 @@ class Agent(QObject):
         if name == "run_shell":
             words = [w for w in str(args.get("command", "")).split() if w not in ("sudo", "env")]
             return f"run_shell:{words[0]}" if words else ""
-        if name == "pc":
-            return f"pc:{args.get('action', '')}"
+        if name in ("pc", "git"):
+            return f"{name}:{args.get('action', '')}"
         return name
 
     @staticmethod
@@ -178,6 +219,9 @@ class Agent(QObject):
             return f"Befehle mit „{key.split(':', 1)[1]}“"
         if key.startswith("pc:"):
             return {"pc:open": "Öffnen von Dateien/Programmen"}.get(key, key)
+        if key.startswith("git:"):
+            return {"git:commit": "Git-Commits", "git:push": "Git-Push", "git:pull": "Git-Pull"}.get(
+                key, "Git: " + key.split(":", 1)[1])
         return {"write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
                 "python_run": "Python ausführen"}.get(key, key)
 
@@ -200,7 +244,7 @@ class Agent(QObject):
         if key and key in self.chat.get("allow", []):
             return True
         short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
-                 {"pc:open": "Öffnen", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
+                 {"pc:open": "Öffnen", "git:commit": "Commit", "git:push": "Push", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
                   "python_run": "Python"}.get(key, key[:18]))
         self.pending = {"text": text, "key": key, "label": self.allow_label(key) if key else "", "short": short,
                         "diff": diff or ""}
@@ -228,6 +272,11 @@ class Agent(QObject):
         tools = expand(self.profile.get("tools", []))
         if "ask_user" in tools:
             system = (system + "\n\n" + ASK_HOWTO).strip()
+        if "git" in tools:
+            system = (system + "\n\n" + GIT_HOWTO).strip()
+        guide = anleitungen()
+        if guide:
+            system = (system + "\n\n" + guide).strip()
         if not s.get("memory_enabled", True):
             return system
         # Auszug einmal pro Chat bilden und dann gleich lassen (Prompt-Cache des Servers bleibt gültig)

@@ -116,6 +116,21 @@ TOOL_SPECS = {
                                  "description": "2–6 kurze Antwortmöglichkeiten"},
                      "multi": {"type": "boolean", "description": "true = mehrere ankreuzbar, Standard false"}},
                     ["question", "options"]),
+    "git": _fn("git", "Git: Änderungen ansehen, committen und pushen (wie ein Entwickler). Aktionen: status, diff, "
+               "log, remotes (nur lesen, ohne Rückfrage); commit (message; files optional, sonst alle Änderungen – "
+               "prüft automatisch auf Passwörter/Schlüssel), push (remote optional, Standard „lokal“ falls vorhanden, "
+               "sonst „origin“), pull, init, remote_add (name + url), clone (url, path = Zielordner). "
+               "Schreibende Aktionen fragt der Nutzer ab.",
+               {"action": {"type": "string", "enum": ["status", "diff", "log", "remotes", "commit", "push", "pull",
+                                                      "init", "remote_add", "clone"]},
+                "path": {"type": "string", "description": "Repo-Ordner, Standard: aktueller Ordner"},
+                "message": {"type": "string", "description": "nur commit: Commit-Nachricht"},
+                "files": {"type": "array", "items": {"type": "string"},
+                          "description": "nur commit: nur diese Dateien (sonst alle Änderungen)"},
+                "remote": {"type": "string", "description": "push/pull: Name des Remotes"},
+                "name": {"type": "string", "description": "remote_add: Name, z. B. lokal"},
+                "url": {"type": "string", "description": "remote_add/clone: Adresse des Repos"}},
+               ["action"]),
 }
 
 MEMORY_TOOLS = ["memory_save", "memory_search", "memory_delete"]
@@ -130,8 +145,21 @@ TOOL_LABELS = {
     "schedule_delete": "Geplantes löschen", "write_file": "Datei schreiben ⚠", "python_run": "Python ausführen ⚠",
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
-    "ask_user": "Rückfrage mit Auswahl",
+    "ask_user": "Rückfrage mit Auswahl", "git": "Git: committen & pushen ⚠",
 }
+
+# Typische Geheimnisse, die nie in ein Repo gehören (geprüft werden nur hinzugefügte Zeilen)
+SECRET_PATTERNS = [
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "privater Schlüssel"),
+    (r"\bghp_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}", "GitHub-Token"),
+    (r"\bsk-[A-Za-z0-9_-]{20,}", "API-Schlüssel (sk-…)"),
+    (r"\bxox[abpr]-[A-Za-z0-9-]{10,}", "Slack-Token"),
+    (r"\bAKIA[0-9A-Z]{16}\b", "AWS-Schlüssel"),
+    (r"(?i)\b(password|passwort|passwd|secret|token|api[_-]?key)\b[\"']?\s*[:=]\s*[\"']([^\"'\s]{8,})[\"']",
+     "Passwort/Token im Klartext"),
+]
+SECRET_FILES = re.compile(r"(^|/)(\.env(\..*)?|id_(rsa|ed25519|ecdsa)|.*\.(pem|key|p12|pfx)|credentials(\.json)?|"
+                          r"git-credentials|.*token)$", re.I)
 
 
 # ---------- Programme finden (.desktop-Starter und Befehle im PATH) ----------
@@ -1042,6 +1070,143 @@ class ToolBox:
 
     def t_memory_delete(self, id, confirm=None):
         return "Gelöscht." if memory.delete(id) else f"Kein Eintrag mit id {id}."
+
+    # --- Git ---
+    def _git(self, repo, *args, timeout=60):
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "PAGER": "cat", "NO_COLOR": "1",
+               "LC_ALL": "C.UTF-8"}
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, errors="replace",
+                           timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+        return p.returncode, (p.stdout + p.stderr).strip()
+
+    @staticmethod
+    def _secrets(diff: str) -> list:
+        hits, cur = [], ""
+        for line in diff.splitlines():
+            if line.startswith("+++ "):
+                cur = line[6:] if line.startswith("+++ b/") else line[4:]
+                if SECRET_FILES.search(cur):
+                    hits.append(f"{cur}: Datei sieht nach Zugangsdaten aus")
+                continue
+            if line.startswith("+") and not line.startswith("+++"):
+                for pat, what in SECRET_PATTERNS:
+                    if re.search(pat, line):
+                        hits.append(f"{cur}: {what}: {line[1:].strip()[:60]}…")
+                        break
+        return hits[:10]
+
+    def t_git(self, action, path="", message="", files=None, remote="", name="", url="", confirm=None):
+        repo = self._path(path) if path else self.cwd
+        if action == "clone":
+            if not url:
+                return "Fehler: clone braucht url."
+            target = self._path(path) if path else self.cwd / Path(url.rstrip("/")).name.removesuffix(".git")
+            if target.exists() and any(target.iterdir()):
+                return f"Fehler: {target} existiert schon und ist nicht leer."
+            if not confirm(f"Repo klonen?\n\n{url}\n→ {target}"):
+                return "Vom Nutzer abgelehnt."
+            rc, out = self._git(target.parent, "clone", url, str(target), timeout=300)
+            return f"exit={rc}\n{clip_tail(out, self.limit)}"
+        if not Path(repo).is_dir():
+            return f"Fehler: Ordner {repo} gibt es nicht."
+        if action == "init":
+            if (Path(repo) / ".git").exists():
+                return f"{repo} ist schon ein Git-Repo."
+            if not confirm(f"Neues Git-Repo anlegen in\n{repo}?"):
+                return "Vom Nutzer abgelehnt."
+            rc, out = self._git(repo, "init", "-b", "main")
+            return f"exit={rc}\n{out}"
+        rc, top = self._git(repo, "rev-parse", "--show-toplevel")
+        if rc:
+            return f"Fehler: {repo} ist kein Git-Repo (erst action=init)."
+        repo = Path(top)
+        _, branch = self._git(repo, "branch", "--show-current")
+        _, remotes = self._git(repo, "remote")
+        remotes = remotes.split()
+        has_head = self._git(repo, "rev-parse", "-q", "--verify", "HEAD")[0] == 0
+        if action == "status":
+            _, st = self._git(repo, "status", "-sb")
+            last = self._git(repo, "log", "--oneline", "-3")[1] if has_head else "noch keine"
+            return clip(f"Repo: {repo}\nRemotes: {', '.join(remotes) or 'keine'}\n{st}\n\nLetzte Commits:\n{last}",
+                        self.limit)
+        if action == "diff":
+            base = ["HEAD"] if has_head else ["--cached"]     # ohne Commit: bereits Vorgemerktes zeigen
+            _, stat = self._git(repo, "diff", *base, "--stat")
+            _, d = self._git(repo, "diff", *base)
+            _, new = self._git(repo, "ls-files", "--others", "--exclude-standard")
+            extra = f"\n\nNeue (noch unbekannte) Dateien:\n{new}" if new else ""
+            return clip(f"{stat}{extra}\n\n{d}" if (stat or new) else "Keine Änderungen.", self.limit)
+        if action == "log":
+            if not has_head:
+                return "Noch keine Commits."
+            return self._git(repo, "log", "--oneline", "--decorate", "-20")[1]
+        if action == "remotes":
+            _, out = self._git(repo, "remote", "-v")
+            return out or "Keine Remotes eingetragen."
+        if action == "remote_add":
+            if not (name and url):
+                return "Fehler: remote_add braucht name und url."
+            if not confirm(f"Remote „{name}“ eintragen?\n\n{url}"):
+                return "Vom Nutzer abgelehnt."
+            rc, out = self._git(repo, "remote", "add", name, url)
+            return f"exit={rc}\n{out}" if rc else f"Remote „{name}“ → {url} eingetragen."
+        if action == "commit":
+            if not message.strip():
+                return "Fehler: commit braucht eine message."
+            _, who = self._git(repo, "config", "user.email")
+            if not who:
+                return ("Fehler: Für dieses Repo ist kein Autor eingetragen (git config user.name / user.email). "
+                        "Frag den Nutzer, welcher Name und welche E-Mail rein sollen, und setze sie mit run_shell "
+                        "nur für dieses Repo.")
+            _, staged_before = self._git(repo, "diff", "--cached", "--name-only")
+            rc, out = self._git(repo, "add", "--", *files) if files else self._git(repo, "add", "-A")
+            if rc:
+                return f"Fehler beim Hinzufügen:\n{out}"
+            _, stat = self._git(repo, "diff", "--cached", "--stat")
+            if not stat:
+                return "Nichts zu committen – keine Änderungen."
+            _, d = self._git(repo, "diff", "--cached")
+            undo = (lambda: None) if staged_before else (lambda: self._git(repo, "reset", "-q"))
+            hits = self._secrets(d)
+            if hits:
+                undo()
+                return ("NICHT committet – mögliche Geheimnisse gefunden:\n" + "\n".join(hits) +
+                        "\n\nSag das dem Nutzer. Lösung: Datei in .gitignore eintragen oder den Wert entfernen.")
+            if not confirm(f"Commit in {repo.name} ({branch}):\n\n{message}\n\n{stat}", diff=clip(d, 30000)):
+                undo()
+                return "Vom Nutzer abgelehnt."
+            rc, out = self._git(repo, "commit", "-q", "-m", message)
+            if rc:
+                return f"Commit fehlgeschlagen:\n{out}"
+            _, h = self._git(repo, "log", "--oneline", "-1")
+            return f"Committet: {h}\n{stat.splitlines()[-1] if stat else ''}"
+        if action in ("push", "pull"):
+            remote = remote or ("lokal" if "lokal" in remotes else "origin" if "origin" in remotes else "")
+            if remote not in remotes:
+                return (f"Fehler: Remote „{remote or '?'}“ fehlt. Vorhanden: {', '.join(remotes) or 'keine'}. "
+                        "Mit action=remote_add eintragen.")
+            if not branch:
+                return "Fehler: kein Branch ausgecheckt."
+            _, rurl = self._git(repo, "remote", "get-url", remote)
+            if action == "pull":
+                if not confirm(f"Neueste Version holen?\n\n{rurl} ({branch}) → {repo}"):
+                    return "Vom Nutzer abgelehnt."
+                rc, out = self._git(repo, "pull", "--ff-only", remote, branch, timeout=180)
+                return f"exit={rc}\n{clip_tail(out, self.limit)}"
+            self._git(repo, "fetch", "-q", remote, timeout=60)
+            rc, ahead = self._git(repo, "log", "--oneline", f"{remote}/{branch}..HEAD")
+            if rc:   # Branch gibt es dort noch nicht → alles ist neu
+                _, ahead = self._git(repo, "log", "--oneline", "-20")
+            if not ahead:
+                return f"Nichts zu pushen – {remote}/{branch} ist schon aktuell."
+            n = len(ahead.splitlines())
+            if not confirm(f"Pushen nach „{remote}“?\n{rurl} ({branch})\n\n{n} Commit(s):\n{ahead[:1500]}"):
+                return "Vom Nutzer abgelehnt."
+            rc, out = self._git(repo, "push", "-u", remote, branch, timeout=180)
+            if rc:
+                return f"Push fehlgeschlagen (exit={rc}):\n{clip_tail(out, self.limit)}"
+            return f"Gepusht nach {remote} ({rurl}), Branch {branch}: {n} Commit(s).\n{clip_tail(out, 1500)}"
+        return f"Fehler: unbekannte Aktion '{action}'."
 
     # --- Rückfrage (die eigentliche Karte zeigt der Agent, siehe Agent._ask) ---
     def t_ask_user(self, question, options=None, multi=False, confirm=None):

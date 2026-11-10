@@ -31,6 +31,10 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
 - **Profile**: pro Vorgang eigener System-Prompt, Temperatur und Werkzeug-Auswahl (`{date}` wird ersetzt).
 - **Werkzeuge**: `web_search` (DuckDuckGo), `fetch_url`, Browser (Playwright: öffnen, lesen, klicken, tippen,
   zurück), `run_shell`, `read_file`, `list_dir`, `write_file`. Shell-Befehle und Schreibzugriffe muss man bestätigen.
+- **Git** (`git`): Änderungen ansehen (`status`, `diff`, `log`), committen und pushen – wie ein Entwickler. Vor jedem
+  Commit prüft spike die neuen Zeilen auf Passwörter, Tokens und Schlüssel und bricht dann ab. Commit, Push und Pull
+  muss man freigeben (die Freigabe zeigt den Diff). Standard-Remote ist `lokal` (z. B. ein eigener Forgejo/Gitea),
+  sonst `origin`. spike committet nur, wenn man es ausdrücklich sagt.
 - **Rückfragen mit Auswahl** (`ask_user`): Braucht das Modell eine Entscheidung, erscheint im Chat (und auf dem Handy)
   eine Karte mit Antwort-Knöpfen oder – bei `multi` – Häkchen zum Ankreuzen. Freie Antwort geht über das Eingabefeld.
 - **Kontext sparen**:
@@ -182,6 +186,13 @@ def wetter(ort: str, ctx) -> str:
 - Dateien, die mit `_` beginnen, werden ignoriert. `_vorlage.py` ist die kommentierte Vorlage.
 - Mitgeliefert: `wetter`, `rechner` (exakte Mathematik) und `system_info` (CPU, RAM, Platten, GPU). Sie stehen unter `examples/plugins/` und
   werden beim ersten Start in den Ordner kopiert.
+
+## Eigene Anleitungen
+
+Jede `.md`-Datei in `~/.config/spike/anleitungen/` kommt in den System-Prompt (zusammen höchstens 8000 Zeichen,
+Dateien mit `_` am Anfang werden ignoriert). So bringst du spike bei, wie du arbeitest, z. B. wo dein Git-Server
+steht und was „sichere es“ bedeutet. Ein Beispiel liegt in `examples/anleitungen/git.md`. Änderungen gelten ab dem
+nächsten Chat.
 
 ## Tray und Popup
 
