@@ -530,6 +530,29 @@ def refresh_drive_index(max_age_h=24, wait=False) -> str:
 
 
 # ---------- sudo: Passwort über ein KDE-Fenster (geht direkt an sudo, nie an das Modell) ----------
+# Pro Chat wird ein einmal eingegebenes, geprüftes Passwort im Arbeitsspeicher gehalten (nie auf Platte,
+# nie im Chat). Für einen Befehl liegt es kurz in einer 0600-Datei in XDG_RUNTIME_DIR; askpass.sh reicht es
+# einmal pro sudo-Aufruf weiter – ist es falsch, fragt sudo erneut und askpass zeigt wieder das Fenster.
+
+_SUDO_PW: dict[str, str] = {}      # Chat-ID → Passwort (nur RAM, weg beim Beenden von spike)
+
+
+def forget_sudo(key=None):
+    if key is None:
+        _SUDO_PW.clear()
+    else:
+        _SUDO_PW.pop(key, None)
+
+
+def _sudo_ok(pw: str) -> bool:
+    """Prüft das Passwort mit sudo -S (ohne Fenster)."""
+    try:
+        r = subprocess.run(["sudo", "-S", "-k", "-v", "-p", ""], input=pw + "\n", text=True,
+                           capture_output=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+
 
 def _askpass() -> str:
     tool = shutil.which("kdialog") or shutil.which("zenity")
@@ -538,10 +561,16 @@ def _askpass() -> str:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     f = CACHE_DIR / "askpass.sh"
     if "kdialog" in tool:
-        body = 'exec kdialog --title "spike – Administrator-Rechte" --password "${1:-Passwort für sudo:}"'
+        ask = 'kdialog --title "spike – Administrator-Rechte" --password "${1:-Passwort für sudo:}"'
     else:
-        body = 'exec zenity --password --title "spike – Administrator-Rechte"'
-    text = f"#!/bin/sh\n# von spike erzeugt: fragt das sudo-Passwort grafisch ab\n{body}\n"
+        ask = 'zenity --password --title "spike – Administrator-Rechte"'
+    text = ("#!/bin/sh\n# von spike erzeugt: fragt das sudo-Passwort grafisch ab\n"
+            "# gemerktes Passwort des Chats: einmal pro sudo-Aufruf ($PPID), danach wieder das Fenster\n"
+            'if [ -n "$SPIKE_PW_FILE" ] && [ -s "$SPIKE_PW_FILE" ] && [ ! -e "$SPIKE_PW_FILE.$PPID" ]; then\n'
+            '  : > "$SPIKE_PW_FILE.$PPID"; cat "$SPIKE_PW_FILE"; exit 0\nfi\n'
+            f"pw=$({ask}) || exit 1\n"
+            'if [ -n "$SPIKE_PW_SAVE" ]; then (umask 077; printf \'%s\' "$pw" > "$SPIKE_PW_SAVE"); fi\n'
+            "printf '%s\\n' \"$pw\"\n")
     if not f.exists() or f.read_text() != text:
         f.write_text(text)
         f.chmod(0o700)
@@ -561,6 +590,7 @@ class ToolBox:
         self.vision = False           # versteht das Modell Bilder?
         self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
         self._proc = None             # laufender Shell-Prozess (für Stopp)
+        self.sudo_key = None          # Chat-ID: sudo-Passwort für diesen Chat merken (nur RAM)
 
     def _mcp_image(self, b64, mime):
         import base64
@@ -599,6 +629,20 @@ class ToolBox:
         cwd = self.cwd if Path(self.cwd).is_dir() else Path.home()
         env = {**os.environ, "TERM": "dumb", "PAGER": "cat", "GIT_PAGER": "cat", "SYSTEMD_PAGER": "cat",
                "NO_COLOR": "1", **({"SUDO_ASKPASS": askpass} if askpass else {})}
+        pw_dir = pw_file = pw_save = None
+        key = self.sudo_key if askpass else None
+        pw = _SUDO_PW.get(key, "") if key else ""
+        if key:
+            pw_dir = Path(tempfile.mkdtemp(prefix="spike-sudo-", dir=os.environ.get("XDG_RUNTIME_DIR") or None))
+            pw_file, pw_save = pw_dir / "pw", pw_dir / "neu"
+            if pw:
+                fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(pw + "\n")
+            env.update(SPIKE_PW_FILE=str(pw_file), SPIKE_PW_SAVE=str(pw_save))
+
+        def hide(line):         # Passwort taucht nie in Ausgabe/Chat auf
+            return line.replace(pw, "•••") if pw and len(pw) >= 3 else line
         p = subprocess.Popen(["bash", "-c", script], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1,
                              start_new_session=True, env=env)
@@ -613,6 +657,7 @@ class ToolBox:
                     line = line[:i]
                     if not line:
                         continue
+                line = hide(line)
                 out.append(line)
                 if on_output:
                     on_output(line)
@@ -627,6 +672,14 @@ class ToolBox:
             p.wait()
         t.join(timeout=2)
         self._proc = None
+        if pw_dir:
+            try:
+                new = pw_save.read_text() if pw_save.exists() else ""
+            except OSError:
+                new = ""
+            shutil.rmtree(pw_dir, ignore_errors=True)
+            if new and new != pw and _sudo_ok(new):      # nur ein richtiges Passwort merken
+                _SUDO_PW[key] = new
         if new_cwd[0] and Path(new_cwd[0]).is_dir():
             self.cwd = Path(new_cwd[0])
         text = "".join(out).rstrip("\n")

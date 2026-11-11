@@ -106,6 +106,7 @@ class Agent(QObject):
         super().__init__()
         self.chat, self.ep, self.model, self.profile = chat, endpoint, model, profile
         self.settings, self.toolbox, self.n_ctx = settings, toolbox, n_ctx
+        toolbox.sudo_key = chat.get("id")      # sudo-Passwort gilt für diesen Chat
         self.live = None          # {"content", "reasoning"} während des Streamens
         self.stopped = False
         self._ev = threading.Event()

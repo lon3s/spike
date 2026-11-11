@@ -2990,6 +2990,7 @@ class MainWindow(QMainWindow):
 
         def job():
             try:
+                self.toolbox.sudo_key = self.chat.get("id")
                 rc, out = self.toolbox.shell(cmd, on_output=on_out)
             except Exception as e:
                 rc, out = -1, f"Fehler: {e}"
