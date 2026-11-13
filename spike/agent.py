@@ -1,4 +1,5 @@
 """Agenten-Schleife: Modell aufrufen → Werkzeuge ausführen → wiederholen. Läuft im Hintergrund-Thread."""
+import itertools
 import json
 import re
 import threading
@@ -373,7 +374,8 @@ class Agent(QObject):
                 int(s.get("keep_full_tool_results", 2)), int(s.get("old_tool_result_chars", 300)),
                 self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)), self.vision)
 
-        for step in range(int(s.get("max_steps", 15))):
+        max_steps = int(s.get("max_steps", 15))      # 0 = unbegrenzt (Stop-Knopf beendet jederzeit)
+        for step in (range(max_steps) if max_steps > 0 else itertools.count()):
             if step and self.take_inbox and not self.stopped:
                 extra = self.take_inbox()       # während der Arbeit nachgeschriebene Nachricht → jetzt mitgeben
                 if extra:

@@ -31,7 +31,7 @@ def shadow(widget, c, blur=22, dy=4, strength=1.0):
 
 
 def _label(text_html, selectable=True, obj=None):
-    lb = QLabel()
+    lb = _FrozenLabel()
     lb.setTextFormat(Qt.RichText)
     lb.setText(text_html)
     lb.setWordWrap(True)
@@ -274,37 +274,114 @@ class TypingDots(QWidget):
         p.end()
 
 
-class LiveText(QLabel):
+class _FrozenLabel(QLabel):
+    """Label mit unveränderlichem Text: Größen werden gemerkt. QLabel layoutet sonst bei jeder Abfrage den
+    ganzen Rich-Text neu – bei vielen eingefrorenen Absätzen kostete das jeden Frame Zeit."""
+    def __init__(self):
+        super().__init__()
+        self._hfw = {}
+        self._sh = self._msh = None
+
+    def setText(self, t):
+        self._hfw, self._sh, self._msh = {}, None, None
+        super().setText(t)
+
+    def heightForWidth(self, w):
+        h = self._hfw.get(w)
+        if h is None:
+            h = self._hfw[w] = super().heightForWidth(w)
+        return h
+
+    def sizeHint(self):
+        if self._sh is None:
+            self._sh = super().sizeHint()
+        return self._sh
+
+    def minimumSizeHint(self):
+        if self._msh is None:
+            self._msh = super().minimumSizeHint()
+        return self._msh
+
+
+class LiveText(QWidget):
     """Live-Text, der gleichmäßig fließt statt in Schüben zu springen.
 
-    Der Server liefert Tokens in Paketen, die Oberfläche bekommt sie alle ~60 ms. Dieses Label merkt sich,
+    Der Server liefert Tokens in Paketen, die Oberfläche bekommt sie alle ~60 ms. Dieses Widget merkt sich,
     wann wie viel Text ankam, und zeigt ihn mit kleiner fester Verzögerung (LAG) so an, dass die Zeichen
-    zwischen zwei Paketen gleichmäßig verteilt erscheinen (~60 Bilder/s). Ergebnis: konstantes Tempo,
-    kein Stocken und kein Pulsieren. Ist der Rückstand zu groß, wird er sanft aufgeholt.
+    zwischen zwei Paketen gleichmäßig verteilt erscheinen. Ist der Rückstand zu groß, wird er sanft aufgeholt.
+
+    chunked=True: fertige Absätze (bis zur letzten Leerzeile außerhalb von Code-Blöcken) werden einmal gerendert
+    und als eigenes Label eingefroren. Pro Frame wird nur noch der offene Rest neu gesetzt – so bleibt die
+    Bildzeit konstant, egal wie lang die Antwort wird (Qt layoutet sonst den ganzen Rich-Text bei jedem setText).
     """
-    FRAME_MS = 16
+    FRAME_MS = 25
     LAG = 0.35           # Sekunden hinter dem Server
     MAX_BACKLOG = 300    # Zeichen – mehr Rückstand wird aufgeholt
+    CHUNK_MIN = 600      # Zeichen – kleinere Absätze bleiben im offenen Rest
 
-    def __init__(self, render, obj=None):
+    def __init__(self, render, obj=None, chunked=False):
         super().__init__()
         self.render = render          # fn(text, done) -> html
+        self.chunked = chunked
+        self.obj = obj
         self.target = ""
         self.shown = 0.0
         self._drawn = -1
+        self._frozen_end = 0          # Zeichen von target, die schon als eingefrorene Labels stehen
+        self._frozen = []
         self.arrivals = [(time.monotonic(), 0)]
-        self.setTextFormat(Qt.RichText)
-        self.setWordWrap(True)
-        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
         # nie breiter als die Spalte: ohne das schiebt eine lange Zeile (Code, Link) den Chat nach rechts raus
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setMinimumWidth(1)
-        if obj:
-            self.setObjectName(obj)
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(0)
+        self.tail = self._mk_label()
+        self.lay.addWidget(self.tail)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.setInterval(self.FRAME_MS)
         self.timer.timeout.connect(self._step)
+
+    def _mk_label(self, frozen=False):
+        lb = _FrozenLabel() if frozen else QLabel()
+        lb.setTextFormat(Qt.RichText)
+        lb.setWordWrap(True)
+        lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lb.setMinimumWidth(1)
+        if self.obj:
+            lb.setObjectName(self.obj)
+        return lb
+
+    def _freeze_upto(self, text):
+        """Fertige Absätze von text als eingefrorene Labels vor den offenen Rest setzen."""
+        pos = self._frozen_end
+        while True:
+            i = text.find("\n\n", pos)
+            if i < 0:
+                return
+            nxt = text[i + 2:i + 3]
+            if not nxt:
+                return                                   # noch nichts nach der Leerzeile
+            chunk = text[self._frozen_end:i]
+            # nicht mitten im Code-Block, nicht vor Listen/Einrückung/Tabelle/Zitat (Nummerierung bliebe sonst nicht erhalten)
+            if (len(chunk) >= self.CHUNK_MIN and chunk.count("```") % 2 == 0
+                    and nxt not in " \t-*+0123456789>|"):
+                lb = self._mk_label(frozen=True)
+                lb.setText(self.render(chunk, True))
+                self.lay.insertWidget(len(self._frozen), lb)
+                self._frozen.append(lb)
+                self._frozen_end = pos = i + 2
+            else:
+                pos = i + 2
+
+    def _reset_frozen(self):
+        for lb in self._frozen:
+            self.lay.removeWidget(lb)
+            lb.hide()
+            lb.deleteLater()
+        self._frozen, self._frozen_end, self._drawn = [], 0, -1
 
     def set_target(self, text):
         if text == self.target:
@@ -312,6 +389,7 @@ class LiveText(QLabel):
         now = time.monotonic()
         if not text.startswith(self.target[:int(self.shown)]):
             self.shown, self.arrivals = 0.0, [(now, 0)]    # Text ersetzt → von vorn
+            self._reset_frozen()
         self.target = text
         self.arrivals.append((now, len(text)))
         self.arrivals = self.arrivals[-50:]
@@ -340,10 +418,14 @@ class LiveText(QLabel):
         n = int(self.shown)
         if n == self._drawn:
             return
-        if total > 6000 and n < total and n - self._drawn < 12:
-            return                    # sehr lange Texte seltener neu setzen (Markdown kostet Zeit)
         self._drawn = n
-        self.setText(self.render(self.target[:n], n >= total))
+        text = self.target[:n]
+        if self.chunked:
+            if n < self._frozen_end:
+                self._reset_frozen()
+            self._freeze_upto(text)
+            text = text[self._frozen_end:]
+        self.tail.setText(self.render(text, n >= total))
 
 
 TERM = {"bg": "#0e1116", "border": "#262c36", "text": "#d6deeb", "prompt": "#7ee787", "muted": "#7d8590",
@@ -1069,7 +1151,7 @@ class ChatView(QScrollArea):
                 return f"💭 <i>{html.escape(t)}</i>"
             w = LiveText(render, obj="Reasoning")
         else:
-            w = LiveText(lambda t, done: md_html(t + ("" if done else " ▍") if t else "▍", c["code"]))
+            w = LiveText(lambda t, done: md_html(t + ("" if done else " ▍") if t else "▍", c["code"]), chunked=True)
         self.live_widgets[kind] = w
         return w
 

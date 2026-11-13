@@ -406,7 +406,7 @@ class SettingsDialog(QDialog):
         self.sp_out = QSpinBox(); self.sp_out.setRange(500, 200_000); self.sp_out.setValue(s["tool_output_max_chars"])
         self.sp_keep = QSpinBox(); self.sp_keep.setRange(0, 50); self.sp_keep.setValue(s["keep_full_tool_results"])
         self.sp_old = QSpinBox(); self.sp_old.setRange(50, 20_000); self.sp_old.setValue(s["old_tool_result_chars"])
-        self.sp_steps = QSpinBox(); self.sp_steps.setRange(1, 100); self.sp_steps.setValue(s["max_steps"])
+        self.sp_steps = QSpinBox(); self.sp_steps.setRange(0, 100_000); self.sp_steps.setSpecialValueText("unbegrenzt"); self.sp_steps.setValue(s["max_steps"])
         self.sp_ctx = QSpinBox(); self.sp_ctx.setRange(512, 2_000_000); self.sp_ctx.setValue(s["default_n_ctx"])
         self.cb_head = QCheckBox("Browser unsichtbar (headless)"); self.cb_head.setChecked(s["browser_headless"])
         self.cb_theme = QComboBox()
