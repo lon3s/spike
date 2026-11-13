@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 
-from . import mcp, memory, plugins
+from . import jobs, mcp, memory, plugins
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
@@ -47,8 +47,21 @@ TOOL_SPECS = {
     "browser_back": _fn("browser_back", "Geht im Browser eine Seite zurück."),
     "run_shell": _fn("run_shell", "Führt einen bash-Befehl aus (Nutzer bestätigt). Kein interaktives Programm "
                      "(kein vim/less). sudo geht: der Nutzer gibt das Passwort selbst in einem Fenster ein. "
-                     "„cd“ bleibt für folgende Befehle erhalten.",
+                     "„cd“ bleibt für folgende Befehle erhalten. Für alles, was länger als ~1 Minute dauert "
+                     "(Builds, Downloads, Tests, Kopieren), stattdessen job_start.",
                      {"command": {"type": "string"}}, ["command"]),
+    "job_start": _fn("job_start", "Startet einen bash-Befehl als Hintergrundauftrag (Nutzer bestätigt) und kehrt "
+                     "sofort zurück. Für lange Läufe: Builds, Downloads, Tests, große Kopien. Die Ausgabe geht in "
+                     "eine Logdatei; wenn der Auftrag endet, bekommst du automatisch eine Nachricht mit "
+                     "Rückgabewert und Log-Ende. Danach also NICHT in einer Schleife nachfragen, sondern andere "
+                     "Arbeit erledigen oder die Antwort beenden. Startet im aktuellen Arbeitsordner.",
+                     {"command": {"type": "string"},
+                      "name": {"type": "string", "description": "kurzer Name, z. B. „Kernel bauen“"}}, ["command"]),
+    "job_status": _fn("job_status", "Zeigt Hintergrundaufträge: ohne id eine Liste (laufend und zuletzt beendet), "
+                      "mit id Zustand und die letzten Zeilen des Logs. grep filtert das Log nach einem Muster "
+                      "(z. B. „error|fehler“), lines = Anzahl Zeilen (Standard 40).",
+                      {"id": {"type": "string"}, "lines": {"type": "integer"}, "grep": {"type": "string"}}),
+    "job_stop": _fn("job_stop", "Bricht einen laufenden Hintergrundauftrag ab.", {"id": {"type": "string"}}, ["id"]),
     "read_file": _fn("read_file", "Liest eine Textdatei mit Zeilennummern (Format „Nummer│Text“; die Nummern "
                      "gehören nicht zum Inhalt). Lange Dateien abschnittsweise mit line lesen.",
                      {"path": {"type": "string"}, "line": {"type": "integer", "description": "erste Zeile, Standard 1"},
@@ -146,6 +159,8 @@ TOOL_LABELS = {
     "pc": "PC steuern (öffnen, Zwischenablage, Lautstärke, Medien)", "memory_save": "Gedächtnis: merken",
     "memory_search": "Gedächtnis: suchen", "memory_delete": "Gedächtnis: löschen",
     "ask_user": "Rückfrage mit Auswahl", "git": "Git: committen & pushen ⚠",
+    "job_start": "Hintergrundauftrag starten ⚠", "job_status": "Hintergrundaufträge: Stand & Log",
+    "job_stop": "Hintergrundauftrag abbrechen",
 }
 
 # Typische Geheimnisse, die nie in ein Repo gehören (geprüft werden nur hinzugefügte Zeilen)
@@ -756,6 +771,36 @@ class ToolBox:
             return "Vom Nutzer abgelehnt."
         rc, out = self.shell(command, on_output=self.on_output)
         return f"exit={rc} · Ordner: {self.cwd}\n" + clip_tail(out, self.limit)
+
+    # --- Hintergrundaufträge (laufen abgekoppelt weiter, Rückmeldung kommt in den Chat) ---
+    def t_job_start(self, command, name="", confirm=None):
+        if not confirm(f"Hintergrundauftrag starten?\n\n{command}"):
+            return "Vom Nutzer abgelehnt."
+        askpass = _askpass()
+        cwd = self.cwd if Path(self.cwd).is_dir() else Path.home()
+        job = jobs.start(command, cwd, chat_id=self.sudo_key or "", name=name,
+                         env={"SUDO_ASKPASS": askpass} if askpass else None,
+                         prelude='sudo() { command sudo -A "$@"; }\n' if askpass else "")
+        return (f"Auftrag [{job['id']}] „{job['name']}“ gestartet (PID {job['pid']}, Ordner {cwd}).\n"
+                f"Log: {job['log']}\nDu bekommst automatisch eine Nachricht, wenn er fertig ist – "
+                f"nicht in einer Schleife nachfragen. Zwischenstand bei Bedarf mit job_status(id=\"{job['id']}\").")
+
+    def t_job_status(self, id="", lines=40, grep="", confirm=None):
+        if not id:
+            items = sorted(jobs.JOBS.values(), key=lambda j: (bool(j.get("end")), -j["start"]))[:12]
+            if not items:
+                return "Keine Hintergrundaufträge."
+            return "\n".join(jobs.describe(j) for j in items)
+        job = jobs.get(str(id))
+        if not job:
+            return f"Kein Auftrag mit id {id}. Liste mit job_status()."
+        out = jobs.tail(job["id"], lines=lines, grep=grep)
+        kopf = jobs.describe(job) + f"\nBefehl: {job['command'][:300]}\nLog: {job['log']}"
+        return kopf + ("\n--- Log" + (f" (nur Zeilen mit „{grep}“)" if grep else "") + " ---\n" +
+                       clip_tail(out, self.limit) if out else "\n(noch keine Ausgabe)")
+
+    def t_job_stop(self, id, confirm=None):
+        return jobs.stop(str(id))
 
     def _path(self, path) -> Path:
         """Relative Pfade gelten ab dem aktuellen Ordner (cd)."""

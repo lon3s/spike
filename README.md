@@ -35,6 +35,12 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Commit prüft spike die neuen Zeilen auf Passwörter, Tokens und Schlüssel und bricht dann ab. Commit, Push und Pull
   muss man freigeben (die Freigabe zeigt den Diff). Standard-Remote ist `lokal` (z. B. ein eigener Forgejo/Gitea),
   sonst `origin`. spike committet nur, wenn man es ausdrücklich sagt.
+- **Hintergrundaufträge** (`job_start`, `job_status`, `job_stop`): Lange Läufe wie Builds, Downloads oder Tests
+  startet das Modell abgekoppelt; die Ausgabe landet in `~/.local/share/spike/jobs/<id>.log`. Spike arbeitet
+  währenddessen weiter oder beendet die Antwort. Ist der Auftrag fertig, erscheint im Chat automatisch eine Nachricht
+  mit Rückgabewert und Log-Ende, auf die das Modell reagiert – auch wenn der Chat gerade geschlossen ist (dann ohne
+  Freigaben, mit Benachrichtigung). Aufträge überleben einen Neustart von spike. `job_status` kann im Log filtern
+  (`grep="error|fehler"`), damit riesige Logs nicht den Kontext fluten.
 - **Rückfragen mit Auswahl** (`ask_user`): Braucht das Modell eine Entscheidung, erscheint im Chat (und auf dem Handy)
   eine Karte mit Antwort-Knöpfen oder – bei `multi` – Häkchen zum Ankreuzen. Freie Antwort geht über das Eingabefeld.
 - **Kontext sparen**:

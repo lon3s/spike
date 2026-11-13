@@ -56,6 +56,16 @@ GIT_HOWTO = (
     "erklären, nicht raten."
 )
 
+JOB_HOWTO = (
+    "Hintergrundaufträge (job_start/job_status/job_stop): Alles, was länger als etwa eine Minute dauern kann "
+    "(Builds, Downloads, Tests, große Kopien, Installationen), startest du mit job_start statt run_shell. "
+    "Danach arbeitest du an anderem weiter oder beendest deine Antwort mit einem kurzen Hinweis, dass der Auftrag "
+    "läuft. Sobald er endet, erscheint im Chat automatisch eine Nachricht „Hintergrundauftrag … fertig“ mit "
+    "Rückgabewert und Log-Ende – darauf reagierst du dann (Ergebnis prüfen, nächster Schritt). Frage nie in einer "
+    "Schleife mit job_status nach; job_status nur, wenn der Nutzer nach dem Stand fragt oder du gezielt im Log "
+    "suchen willst (grep=\"error|fehler\"). Lange Ausgaben immer eingrenzen: grep, lines, tail, head."
+)
+
 ANLEITUNGEN_DIR = CONFIG_DIR / "anleitungen"
 
 
@@ -207,7 +217,7 @@ class Agent(QObject):
     # Was „Immer erlauben“ freischaltet: bei Shell-Befehlen nur dasselbe Programm, sonst das Werkzeug
     def _allow_key(self):
         name, args = self._cur
-        if name == "run_shell":
+        if name in ("run_shell", "job_start"):      # Hintergrundauftrag = Shell-Befehl, gleiche Freigabe
             words = [w for w in str(args.get("command", "")).split() if w not in ("sudo", "env")]
             return f"run_shell:{words[0]}" if words else ""
         if name in ("pc", "git"):
@@ -275,6 +285,8 @@ class Agent(QObject):
             system = (system + "\n\n" + ASK_HOWTO).strip()
         if "git" in tools:
             system = (system + "\n\n" + GIT_HOWTO).strip()
+        if "job_start" in tools:
+            system = (system + "\n\n" + JOB_HOWTO).strip()
         guide = anleitungen()
         if guide:
             system = (system + "\n\n" + guide).strip()

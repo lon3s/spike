@@ -2844,6 +2844,24 @@ class MainWindow(QMainWindow):
         self._show_queue()
         self._info("⏳ Vorgemerkt – geht nach dem nächsten Schritt bzw. nach der Antwort raus")
 
+    def inject_message(self, msg: dict) -> bool:
+        """Nachricht von außen (z. B. „Hintergrundauftrag fertig“) in diesen Chat geben: läuft gerade eine
+        Antwort, wandert sie in die Warteschlange, sonst startet sie sofort eine neue Runde."""
+        if self.chat is None:
+            return False
+        if self.agent:
+            with self._queue_lock:
+                self.queue.append(msg)
+            self._show_queue()
+            return True
+        if not self.endpoint() or (self.ctrl and self.ctrl.busy(self.chat["id"])):
+            return False
+        self._sync_chat_settings()
+        self.chat["messages"].append(msg)
+        self.redraw(force_bottom=True)
+        self._start_agent()
+        return True
+
     @staticmethod
     def _merge_msgs(items):
         if len(items) == 1:

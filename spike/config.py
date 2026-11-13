@@ -70,7 +70,8 @@ DEFAULT_CONFIG = {
                 "Du kannst Shell-Befehle ausführen und Dateien lesen/schreiben; der Nutzer bestätigt jede "
                 "Aktion. Erkläre kurz, was du vorhast, bevor du etwas veränderst."
             ),
-            "tools": ["run_shell", "read_file", "list_dir", "write_file", "ask_user"],
+            "tools": ["run_shell", "job_start", "job_status", "job_stop", "read_file", "list_dir", "write_file",
+                      "ask_user"],
             "temperature": 0.2,
             "max_tokens": 0,
         },
@@ -157,6 +158,13 @@ def _migrate(cfg) -> bool:
             if isinstance(t, list) and t and "*" not in t and "ask_user" not in t:
                 t.append("ask_user")
         done.add("ask_user")
+        changed = True
+    if "jobs" not in done:    # Hintergrundaufträge für alle Profile, die Shell-Befehle dürfen
+        for p in cfg["profiles"]:
+            t = p.get("tools")
+            if isinstance(t, list) and "run_shell" in t and "*" not in t:
+                t.extend(x for x in ("job_start", "job_status", "job_stop") if x not in t)
+        done.add("jobs")
         changed = True
     if changed:
         cfg["settings"]["migrations"] = sorted(done)

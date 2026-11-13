@@ -51,6 +51,8 @@ def _layer_shell(widget, margin=0) -> bool:
 
 class _WebBridge(QObject):
     saved = Signal(str, object, bool)       # chat_id, geänderte Felder (oder None), gelöscht
+    job_done = Signal(dict)                 # Hintergrundauftrag beendet (aus dem Beobachter-Thread)
+    job_answered = Signal(str, str, str)    # chat_id, titel, antwort – Modell hat ohne Fenster reagiert
 
 
 class Controller:
@@ -91,13 +93,95 @@ class Controller:
         self.web = WebApp(self.browser, self)
         self.web.apply(C.load_config()["settings"])
         app.aboutToQuit.connect(self.web.stop)
+        # Hintergrundaufträge: laufende aus der letzten Sitzung weiter beobachten, Fertig-Meldungen verteilen
+        from . import jobs as _J
+        self.job_runs: dict[str, object] = {}      # chat_id -> Agent ohne Fenster (Chat war nirgends offen)
+        self._wb.job_done.connect(self._job_done)
+        self._wb.job_answered.connect(self._job_answered)
+        _J.ON_DONE.append(lambda job: self._wb.job_done.emit(dict(job)))
+        _J.restore()
         # Popup schon kurz nach dem Start unsichtbar vorbereiten – sonst dauert der erste Klick ~1,5 s
         QTimer.singleShot(2500, self._ensure_popup)
 
     # --- Handy: Abgleich mit den Fenstern (Aufrufe kommen aus Hintergrund-Threads) ---
     def busy(self, chat_id):
-        return any(w is not None and w.agent and w.chat and w.chat.get("id") == chat_id
-                   for w in (self.main, self.popup))
+        return chat_id in self.job_runs or any(
+            w is not None and w.agent and w.chat and w.chat.get("id") == chat_id for w in (self.main, self.popup))
+
+    # --- Hintergrundauftrag fertig → Nachricht in den Chat, aus dem er gestartet wurde ---
+    @staticmethod
+    def job_message(job: dict) -> dict:
+        from . import jobs as J
+        rc = job.get("rc")
+        kopf = (f"⚙ Hintergrundauftrag [{job['id']}] „{job['name']}“ "
+                + ("fertig (exit 0)" if rc == 0 else "beendet – Rückgabewert unbekannt (spike lief nicht durchgehend)"
+                   if rc is None else f"abgebrochen (Signal {-rc})" if rc < 0 else f"FEHLGESCHLAGEN (exit {rc})")
+                + f" nach {J._dur(job)}.")
+        tail = J.tail(job["id"], lines=25)
+        text = kopf + f"\nLog: {job['log']} (mehr mit job_status)\n--- Log-Ende ---\n{tail[-3000:]}"
+        return {"role": "user", "content": text, "_job": job["id"]}
+
+    def _job_done(self, job: dict, versuch=0):
+        from . import config as C, scheduler as S
+        cid = job.get("chat") or ""
+        msg = self.job_message(job)
+        if cid:
+            for w in (self.main, self.popup):      # Chat in einem Fenster offen → dort einschieben
+                if w is not None and w.chat and w.chat.get("id") == cid and w.inject_message(msg):
+                    return
+            if self.web and cid in self.web.runs or cid in self.job_runs:
+                if versuch < 120:                  # läuft gerade woanders – gleich nochmal
+                    QTimer.singleShot(5000, lambda: self._job_done(job, versuch + 1))
+                return
+            try:
+                chat = C.load_chat(cid)
+            except FileNotFoundError:
+                chat = None
+            if chat is not None and self._run_headless(chat, msg):
+                return
+        title = f"⚙ {job['name'][:50]}"
+        S.notify(title, msg["content"].split("\n", 1)[0], on_open=(lambda: self.show_main(cid)) if cid else None,
+                 urgent=job.get("rc") not in (0, None))
+
+    def _run_headless(self, chat: dict, msg: dict) -> bool:
+        """Chat ist nirgends offen: Modell ohne Fenster reagieren lassen (wie geplante Aufgaben, ohne Freigaben)."""
+        from . import config as C, scheduler as S
+        from .agent import Agent
+        from .tools import ToolBox
+        win = self.main or self.popup
+        if win is None:
+            return False
+        ep = win.endpoint()
+        if not ep:
+            return False
+        cfg = win.cfg
+        prof = next((p for p in cfg["profiles"] if p["name"] == chat.get("profile")), None) or win.profile()
+        n_ctx = win.n_ctx.get(ep["name"]) or cfg["settings"]["default_n_ctx"]
+        tb = ToolBox(cfg["settings"], self.browser)
+        cwd = Path(chat.get("cwd") or Path.home())
+        tb.cwd = cwd if cwd.is_dir() else Path.home()
+        chat["messages"].append(msg)
+        a = Agent(chat, ep, win.model_id(), prof, cfg["settings"], tb, n_ctx)
+        a.vision = tb.vision = bool(win.vision.get(ep["name"]))
+        a.auto_deny = True
+        cid = chat["id"]
+        self.job_runs[cid] = a
+
+        def done():
+            C.save_chat(chat)
+            self.job_runs.pop(cid, None)
+            last = next((m.get("content") for m in reversed(chat["messages"])
+                         if m["role"] == "assistant" and m.get("content")), "(keine Antwort)")
+            self._wb.job_answered.emit(cid, msg["content"].split("\n", 1)[0], last)
+        a.finished.connect(done, Qt.DirectConnection)
+        C.save_chat(chat)
+        a.start()
+        return True
+
+    def _job_answered(self, cid, title, text):
+        from . import scheduler as S
+        self.saved(cid)              # Fenster/Chatliste auffrischen
+        S.notify(title, text[:400], on_open=lambda: self.show_main(cid))
 
     def saved(self, chat_id, meta=None, deleted=False):
         self._wb.saved.emit(chat_id, meta, deleted)
