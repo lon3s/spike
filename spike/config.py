@@ -166,6 +166,13 @@ def _migrate(cfg) -> bool:
                 t.extend(x for x in ("job_start", "job_status", "job_stop") if x not in t)
         done.add("jobs")
         changed = True
+    if "unteragent" not in done:    # Unteragenten für Profile, die Dateien ändern oder Befehle ausführen dürfen
+        for p in cfg["profiles"]:
+            t = p.get("tools")
+            if isinstance(t, list) and "*" not in t and ("run_shell" in t or "edit_file" in t) and "unteragent" not in t:
+                t.append("unteragent")
+        done.add("unteragent")
+        changed = True
     if changed:
         cfg["settings"]["migrations"] = sorted(done)
     return changed

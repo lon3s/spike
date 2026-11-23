@@ -144,6 +144,14 @@ TOOL_SPECS = {
                 "name": {"type": "string", "description": "remote_add: Name, z. B. lokal"},
                 "url": {"type": "string", "description": "remote_add/clone: Adresse des Repos"}},
                ["action"]),
+    "unteragent": _fn("unteragent", "Startet einen Unteragenten, der eine abgegrenzte Teilaufgabe selbstständig erledigt "
+                      "(eigener Chat, gleiche Werkzeuge, kann den Nutzer nicht fragen) und dir nur seinen Bericht "
+                      "zurückgibt. Mehrere unteragent-Aufrufe in EINER Antwort laufen gleichzeitig. Beschreibe die "
+                      "Aufgabe vollständig – der Unteragent sieht diesen Chat nicht.",
+                      {"aufgabe": {"type": "string", "description": "vollständige Aufgabe: Ziel, Pfade, gewünschtes Ergebnis"},
+                       "name": {"type": "string", "description": "Kurzname (2–4 Wörter) für die Anzeige"},
+                       "kontext": {"type": "string", "description": "optional: nötiges Hintergrundwissen aus diesem Chat"}},
+                      ["aufgabe"]),
 }
 
 MEMORY_TOOLS = ["memory_save", "memory_search", "memory_delete"]
@@ -161,6 +169,7 @@ TOOL_LABELS = {
     "ask_user": "Rückfrage mit Auswahl", "git": "Git: committen & pushen ⚠",
     "job_start": "Hintergrundauftrag starten ⚠", "job_status": "Hintergrundaufträge: Stand & Log",
     "job_stop": "Hintergrundauftrag abbrechen",
+    "unteragent": "Unteragenten starten (parallel)",
 }
 
 # Typische Geheimnisse, die nie in ein Repo gehören (geprüft werden nur hinzugefügte Zeilen)

@@ -2,14 +2,16 @@
 import itertools
 import json
 import re
+import shlex
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from . import memory
-from .config import CONFIG_DIR
+from .config import CONFIG_DIR, new_chat, save_chat
 from .client import complete, stream_chat
 from .context import budget, build_messages, estimate_tokens, pick_cut, summary_request
 from .tools import MEMORY_TOOLS, expand, specs_for
@@ -80,7 +82,7 @@ Kurzbeschreibung: Was ist das für ein Projekt, was soll am Ende herauskommen?
 
 ## Befehle
 - Bauen/Starten: 
-- Testen: 
+- Prüfen (läuft nach Code-Änderungen von selbst): 
 
 ## Stand
 - (Was ist fertig, was ist offen, was kommt als Nächstes – hier pflegt spike mit.)
@@ -92,6 +94,35 @@ PROJECT_HOWTO = (
     "lernst (Teil fertig, Entscheidung, Stolperfalle, nächster Schritt), trägst du es knapp mit edit_file im "
     "Abschnitt „Stand“ dieser Datei nach, damit ein neuer Chat nahtlos weitermachen kann. Keine Romane: die "
     "Datei bleibt kurz und aktuell."
+)
+
+
+_CHECK_RE = re.compile(r"(?im)^[ \t]*[-*]?[ \t]*(?:Prüfen|Pruefen|Testen|Test|Check)\b[^:\n]*:[ \t]*(.+?)[ \t]*$")
+
+
+def project_check(path):
+    """Prüf-Befehl aus der SPIKE.md (Zeile „Prüfen: …“ / „Testen: …“) oder ""."""
+    try:
+        m = _CHECK_RE.search(Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+    cmd = (m.group(1) if m else "").strip().strip("`").strip()
+    return "" if not cmd or cmd.startswith("(") else cmd
+
+
+SUB_HOWTO = (
+    "Unteragenten (unteragent): Für klar abgegrenzte Teilaufgaben, die sich unabhängig erledigen lassen – z. B. "
+    "mehrere Quellen recherchieren, getrennte Module/Dateien untersuchen oder bauen, Code gegenlesen. Mehrere "
+    "unteragent-Aufrufe in EINER Antwort laufen gleichzeitig. Beschreibe jede Aufgabe vollständig (der Unteragent "
+    "sieht diesen Chat nicht): Ziel, Pfade, gewünschtes Ergebnisformat. Niemals zwei Unteragenten an dieselbe Datei "
+    "setzen. Nicht für Kleinkram. Du bekommst nur den Bericht zurück: prüfe Wichtiges selbst und fasse dann für den "
+    "Nutzer zusammen."
+)
+
+SUB_ROLE = (
+    "Du bist ein Unteragent. Ein anderer Agent hat dir eine Teilaufgabe übergeben; den Nutzer kannst du nicht fragen. "
+    "Erledige genau diese Aufgabe selbstständig, ändere nur, was sie verlangt, und schließe mit einem knappen Bericht: "
+    "was du getan hast, das Ergebnis, geänderte Dateien, offene Punkte."
 )
 
 
@@ -179,6 +210,9 @@ class Agent(QObject):
         self._reason = ""
         self._note = ""           # automatische Ablehnung (Nur-Lesen, geplante Aufgabe) – Hinweis fürs Modell
         self._ask_reply = None    # Antwort auf eine Rückfrage: {"choices": [...], "text": "..."}
+        self.parent = None        # Unteragent: der Agent, der ihn gestartet hat
+        self.children = []        # laufende Unteragenten
+        self._conf_lock = threading.Lock()    # Freigaben von Unteragenten nacheinander an den Nutzer
         self.take_inbox = None    # Callback: liefert eine nachgereichte Nutzer-Nachricht (Warteschlange) oder None
 
     # --- Steuerung ---
@@ -214,6 +248,8 @@ class Agent(QObject):
 
     def stop(self):
         self.stopped = True
+        for c in list(self.children):
+            c.stop()
         self._answer = False
         self._ev.set()
         self.toolbox.kill()
@@ -287,6 +323,13 @@ class Agent(QObject):
     def _confirm(self, text, diff=None) -> bool:
         if self.stopped:
             return False
+        if self.parent is not None:      # Unteragent: Freigabe läuft über den Chat des Hauptagenten
+            p = self.parent
+            with p._conf_lock:
+                p._cur, p._note, p._reason = self._cur, "", ""
+                ok = p._confirm("🤖 Unteragent fragt:\n\n" + text, diff)
+                self._note, self._reason = p._note, p._reason
+            return ok
         key = self._allow_key()
         mode = self.settings.get("perm_mode", "fragen")
         if mode == "lesen":
@@ -340,8 +383,13 @@ class Agent(QObject):
             system = (system + "\n\n" + guide).strip()
         proj = find_project(getattr(self.toolbox, "cwd", Path.home()))
         if proj:
-            system = (system + "\n\n" + PROJECT_HOWTO.format(path=proj[0]) +
-                      f"\n\n## Projekt: {proj[0].parent.name}\n{proj[1]}").strip()
+            howto = PROJECT_HOWTO.format(path=proj[0])
+            if self._check_enabled() and project_check(proj[0]):
+                howto += (" Die Zeile „Prüfen:“ führt spike nach deinen Code-Änderungen automatisch aus; schlägt sie "
+                          "fehl, bekommst du die Ausgabe und behebst den Fehler.")
+            system = (system + "\n\n" + howto + f"\n\n## Projekt: {proj[0].parent.name}\n{proj[1]}").strip()
+        if "unteragent" in tools:
+            system = (system + "\n\n" + SUB_HOWTO).strip()
         if not s.get("memory_enabled", True):
             return system
         # Auszug einmal pro Chat bilden und dann gleich lassen (Prompt-Cache des Servers bleibt gültig)
@@ -394,6 +442,110 @@ class Agent(QObject):
         self.info.emit(f"📦 {cut - start} ältere Nachrichten zusammengefasst ({len(summary)} Zeichen).")
         return True
 
+    # --- Selbstprüfung nach Code-Änderungen ---
+    def _check_enabled(self) -> bool:
+        return bool(self.settings.get("self_check", True)) and not self.auto_deny and \
+            self.settings.get("perm_mode", "fragen") != "lesen"
+
+    def _self_check(self, msgs, state) -> bool:
+        """Führt den „Prüfen:“-Befehl der SPIKE.md aus. True = fehlgeschlagen, Modell soll weiterarbeiten."""
+        if not self._check_enabled() or self.parent is not None:
+            return False
+        proj = find_project(self.toolbox.cwd)
+        cmd = project_check(proj[0]) if proj else ""
+        if not cmd:
+            return False
+        tries = int(self.settings.get("self_check_tries", 3))
+        if state["fails"] >= tries:
+            self.info.emit(f"⚠ Die Prüfung schlägt nach {tries} Reparaturversuchen weiter fehl – ich höre auf.")
+            return False
+        state["n"] += 1
+        cid = f"check_{state['n']}"
+        msgs.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": cid, "type": "function",
+             "function": {"name": "run_shell", "arguments": json.dumps({"command": cmd}, ensure_ascii=False)}}]})
+        self.info.emit("🔎 Selbstprüfung läuft …")
+        old_cwd = self.toolbox.cwd
+        self.toolbox.cwd = proj[0].parent
+        self._cur, self._reason, self._note = ("run_shell", {"command": cmd}), "", ""
+        self.live_tool = {"id": cid, "out": ""}
+
+        def on_out(text, lt=self.live_tool):
+            lt["out"] = (lt["out"] + text)[-20000:]
+            self._tick()
+        self.toolbox.on_output = on_out
+        try:
+            result = self.toolbox.run("run_shell", {"command": cmd}, self._confirm)
+        finally:
+            self.toolbox.on_output = None
+            self.live_tool = None
+            self.toolbox.cwd = old_cwd
+        m = re.match(r"exit=(-?\d+)", result)
+        failed = bool(m) and m.group(1) != "0"
+        if not m and self._note:
+            result = f"Nicht ausgeführt. {self._note}"
+        if failed:
+            state["fails"] += 1
+            result += (f"\n\n⚠ Selbstprüfung fehlgeschlagen (Versuch {state['fails']}/{tries}). Finde die Ursache, "
+                       f"ändere den Code entsprechend und beende erst dann deine Antwort – die Prüfung läuft danach "
+                       f"automatisch erneut.")
+        msgs.append({"role": "tool", "tool_call_id": cid, "name": "run_shell", "content": result})
+        self._tick(force=True)
+        if not failed and m:
+            self.info.emit("✓ Selbstprüfung bestanden")
+        return failed
+
+    # --- Unteragenten ---
+    def _unteragent(self, args) -> str:
+        task = str(args.get("aufgabe") or args.get("task") or "").strip()
+        if not task:
+            return "Fehler: aufgabe fehlt."
+        if self.parent is not None:
+            return "Fehler: Unteragenten können keine weiteren Unteragenten starten."
+        if self.stopped:
+            return "Abgebrochen."
+        name = " ".join(str(args.get("name") or task).split())[:40]
+        ctx = str(args.get("kontext") or "").strip()
+        tools = [t for t in expand(self.profile.get("tools", [])) if t not in ("unteragent", "ask_user")]
+        prof = dict(self.profile, tools=tools,
+                    system_prompt=(SUB_ROLE + "\n\n" + (self.profile.get("system_prompt") or "")).strip())
+        settings = dict(self.settings, max_steps=int(self.settings.get("sub_max_steps", 25)))
+        chat = new_chat(self.chat.get("endpoint", ""), self.chat.get("model", ""), self.chat.get("profile", ""))
+        chat.update(title=f"🤖 {name}", archived=True, parent=self.chat.get("id"), cwd=str(self.toolbox.cwd))
+        text = task + (f"\n\nKontext vom Hauptagenten:\n{ctx}" if ctx else "")
+        chat["messages"].append({"role": "user", "content": text})
+        from .tools import ToolBox
+        tb = ToolBox(settings, self.toolbox.browser)
+        tb.cwd = self.toolbox.cwd
+        tb.vision = self.toolbox.vision
+        sub = Agent(chat, self.ep, self.model, prof, settings, tb, self.n_ctx)
+        sub.parent, sub.vision, sub.auto_deny = self, self.vision, self.auto_deny
+        self.children.append(sub)
+        self.info.emit(f"🤖 Unteragent „{name}“ arbeitet …")
+        err = ""
+        try:
+            sub._loop()
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+        finally:
+            sub.live = None
+            try:
+                self.children.remove(sub)
+            except ValueError:
+                pass
+            try:
+                save_chat(chat)
+            except OSError:
+                pass
+        if self.stopped:
+            return "Abgebrochen."
+        last = next((m.get("content") for m in reversed(chat["messages"])
+                     if m["role"] == "assistant" and m.get("content")), "")
+        head = f"Bericht des Unteragenten „{name}“ (Verlauf: archivierter Chat {chat['id']}):\n"
+        if err:
+            return head + f"⚠ Abgebrochen mit Fehler: {err}\n" + (last or "")[:4000]
+        return head + ((last or "(keine Antwort)")[:8000])
+
     # --- Hauptschleife ---
     def _run(self):
         try:
@@ -425,6 +577,8 @@ class Agent(QObject):
                 int(s.get("keep_full_tool_results", 2)), int(s.get("old_tool_result_chars", 300)),
                 self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)), self.vision)
 
+        chk = {"fails": 0, "n": 0}
+        edited = False       # wurde in dieser Runde Code geändert? → Selbstprüfung am Ende
         max_steps = int(s.get("max_steps", 15))      # 0 = unbegrenzt (Stop-Knopf beendet jederzeit)
         for step in (range(max_steps) if max_steps > 0 else itertools.count()):
             if step and self.take_inbox and not self.stopped:
@@ -518,11 +672,26 @@ class Agent(QObject):
             self._tick(force=True)
 
             if self.stopped or not msg.get("tool_calls"):
+                if edited and not self.stopped and self._self_check(msgs, chk):
+                    edited = False
+                    continue
                 return
 
             pending_images = []
+            pre = {}      # mehrere Unteragenten in einer Antwort laufen gleichzeitig
+            subs = [c for c in tool_calls if c["function"]["name"] == "unteragent"]
+            if len(subs) > 1 and not self.stopped:
+                def run_sub(c):
+                    try:
+                        a = json.loads(c["function"]["arguments"] or "{}")
+                        return c["id"], self._unteragent(a if isinstance(a, dict) else {})
+                    except Exception as e:
+                        return c["id"], f"Fehler: {type(e).__name__}: {e}"
+                with ThreadPoolExecutor(max_workers=max(1, int(s.get("sub_parallel", 3)))) as ex:
+                    pre = dict(ex.map(run_sub, subs))
             for c in tool_calls:
                 name = c["function"]["name"]
+                args = {}
                 if self.stopped:
                     result = "Abgebrochen."
                 else:
@@ -541,7 +710,9 @@ class Agent(QObject):
                             self._tick()
                         self.toolbox.on_output = on_out
                         try:
-                            result = (self._ask(args) if name == "ask_user"
+                            result = (pre[c["id"]] if c["id"] in pre
+                                      else self._ask(args) if name == "ask_user"
+                                      else self._unteragent(args) if name == "unteragent"
                                       else self.toolbox.run(name, args, self._confirm))
                         finally:
                             self.toolbox.on_output = None
@@ -559,6 +730,10 @@ class Agent(QObject):
                 if self.toolbox.last_undo:
                     tmsg["_undo"] = self.toolbox.last_undo      # für ↶ Rückgängig / /undo
                     self.toolbox.last_undo = None
+                if name in ("write_file", "edit_file") and (tmsg.get("_undo") or tmsg.get("_diff")):
+                    fn = Path(str(args.get("path") or "")).name.lower() if isinstance(args, dict) else ""
+                    if fn != "spike.md" and not fn.endswith((".md", ".txt")):
+                        edited = True
                 msgs.append(tmsg)
                 for att in self.toolbox.take_images():          # z. B. Screenshot-Werkzeug
                     pending_images.append(att)

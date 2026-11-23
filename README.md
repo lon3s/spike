@@ -271,6 +271,8 @@ wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Hei
 - **Denken an/aus** pro Profil (⚙ → Profile oder `/denken an|aus`): Aus ist bei einfachen Aufgaben deutlich schneller
   (Dateisuche: 9 s statt 55 s). Wirkt bei llama.cpp mit Qwen & Co. (`enable_thinking`).
 - **Projekt-Modus**: Liegt im Arbeitsordner (oder darüber, höchstens bis `~`) eine `SPIKE.md`, steht ihr Inhalt im System-Prompt: Ziel, Regeln, Befehle und der Stand. spike trägt dauerhaft Wichtiges selbst im Abschnitt „Stand“ nach, damit ein neuer Chat nahtlos weitermacht.
+- **Selbstprüfung**: Steht in der `SPIKE.md` eine Zeile `Prüfen: <Befehl>` (z. B. Tests oder Build), führt spike den Befehl automatisch aus, nachdem das Modell Code geändert hat. Schlägt er fehl, bekommt das Modell die Ausgabe und repariert den Fehler – höchstens dreimal (`self_check_tries`), abschaltbar mit `self_check: false`. Dokumentation (`.md`/`.txt`) löst keine Prüfung aus.
+- **Unteragenten** (Werkzeug `unteragent`): Das Modell gibt abgegrenzte Teilaufgaben an eigene Agenten ab (eigener, archivierter Chat, Titel „🤖 …“, gleiche Werkzeuge, Rückfragen nicht möglich). Mehrere Aufrufe in einer Antwort laufen gleichzeitig (`sub_parallel`, Standard 3 – der Server braucht dafür genug parallele Plätze, bei llama.cpp `-np`). Freigaben der Unteragenten erscheinen nacheinander im Chat des Hauptagenten, „Stopp“ beendet alle.
 - **Freigabe-Modus** (Chip unter dem Eingabefeld, im Popup das Symbol in der Infozeile, `/modus`):
   🛡 **Fragen** (Standard, vor jeder Aktion), ✎ **Dateien auto** (Dateien ohne Rückfrage, Befehle weiter fragen),
   ⚡ **Yolo** (nichts mehr fragen – Vorsicht) und 👁 **Nur lesen** (nichts ausführen, nur vorschlagen).
