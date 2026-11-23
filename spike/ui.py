@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from html import escape as html_escape
 
 from . import config as C
+from . import agent as AG
 from .agent import Agent, PERM_MODES, PERM_LABEL
 from .client import get_n_ctx, has_vision, list_models
 from .chatview import ChatView, shadow
@@ -3266,6 +3267,7 @@ class MainWindow(QMainWindow):
         ("/denken", ("/think",), "[an|aus|standard]", "Nachdenken des Modells für dieses Profil schalten"),
         ("/modus", ("/mode", "/freigabe"), "[fragen|dateien|alles|lesen]",
          "Freigabe-Modus: immer fragen, Dateien automatisch, nicht mehr fragen, nur lesen"),
+        ("/projekt", ("/project",), "[neu]", "SPIKE.md des Arbeitsordners anzeigen – mit „neu“ eine Vorlage anlegen"),
         ("/stop", (), "", "Laufende Antwort abbrechen"),
         ("/gross", ("/big", "/fenster"), "", "Chat im großen Fenster öffnen"),
         ("/einstellungen", ("/settings",), "", "Einstellungen öffnen"),
@@ -3470,6 +3472,8 @@ class MainWindow(QMainWindow):
         elif name == "/stop":
             self.stop()
             self.speaker.stop()
+        elif name == "/projekt":
+            self.project_cmd(arg)
         elif name == "/gross":
             if self.popup and self.ctrl:
                 self.ctrl.show_main(self.chat["id"] if self.chat else None)
@@ -3490,6 +3494,21 @@ class MainWindow(QMainWindow):
         elif name == "/hilfe":
             self.show_help()
         return True
+
+    def project_cmd(self, arg=""):
+        cwd = Path(self.toolbox.cwd)
+        found = AG.find_project(cwd)
+        if arg.strip().lower() in ("neu", "new"):
+            f = cwd / AG.PROJECT_FILE
+            if f.exists():
+                self._info(f"{f} gibt es schon.")
+            else:
+                f.write_text(AG.PROJECT_TEMPLATE.format(name=cwd.name), encoding="utf-8")
+                self._info(f"Projektdatei angelegt: {f} – trag Regeln und Ziel ein; spike liest sie ab der nächsten Nachricht.")
+        elif found:
+            self._info(f"Projekt-Modus aktiv: {found[0]} ({len(found[1])} Zeichen)")
+        else:
+            self._info(f"Kein Projekt in {cwd}. „/projekt neu“ legt eine {AG.PROJECT_FILE} an.")
 
     def show_help(self):
         self.input.clear()

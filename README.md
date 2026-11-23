@@ -270,6 +270,7 @@ wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Hei
   das Modell.
 - **Denken an/aus** pro Profil (⚙ → Profile oder `/denken an|aus`): Aus ist bei einfachen Aufgaben deutlich schneller
   (Dateisuche: 9 s statt 55 s). Wirkt bei llama.cpp mit Qwen & Co. (`enable_thinking`).
+- **Projekt-Modus**: Liegt im Arbeitsordner (oder darüber, höchstens bis `~`) eine `SPIKE.md`, steht ihr Inhalt im System-Prompt: Ziel, Regeln, Befehle und der Stand. spike trägt dauerhaft Wichtiges selbst im Abschnitt „Stand“ nach, damit ein neuer Chat nahtlos weitermacht.
 - **Freigabe-Modus** (Chip unter dem Eingabefeld, im Popup das Symbol in der Infozeile, `/modus`):
   🛡 **Fragen** (Standard, vor jeder Aktion), ✎ **Dateien auto** (Dateien ohne Rückfrage, Befehle weiter fragen),
   ⚡ **Yolo** (nichts mehr fragen – Vorsicht) und 👁 **Nur lesen** (nichts ausführen, nur vorschlagen).
@@ -297,6 +298,7 @@ wie Tailscale (siehe oben) nehmen. Mit Firewall (z. B. ufw) muss der Port im Hei
 | `/merk <Text>` | ins Gedächtnis schreiben |
 | `/denken [an\|aus\|standard]` | Nachdenken des Modells für das Profil schalten |
 | `/modus [fragen\|dateien\|yolo\|lesen]` | Freigabe-Modus wechseln |
+| `/projekt [neu]` | Projekt-Modus: zeigt die `SPIKE.md` des Arbeitsordners, `neu` legt eine Vorlage an |
 | `/stop` | Antwort abbrechen |
 | `/gross` | Chat im großen Fenster öffnen |
 | `/einstellungen` | Einstellungen |

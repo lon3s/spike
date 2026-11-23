@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
@@ -68,6 +69,52 @@ JOB_HOWTO = (
 )
 
 ANLEITUNGEN_DIR = CONFIG_DIR / "anleitungen"
+
+PROJECT_FILE = "SPIKE.md"
+PROJECT_TEMPLATE = """# {name}
+
+Kurzbeschreibung: Was ist das für ein Projekt, was soll am Ende herauskommen?
+
+## Regeln
+- (Sprache, Stil, was nie angefasst werden darf …)
+
+## Befehle
+- Bauen/Starten: 
+- Testen: 
+
+## Stand
+- (Was ist fertig, was ist offen, was kommt als Nächstes – hier pflegt spike mit.)
+"""
+
+PROJECT_HOWTO = (
+    "Projekt-Modus: Der Arbeitsordner gehört zu einem Projekt mit der Datei {path}. Ihr Inhalt steht unten und gilt "
+    "als Auftrag und Regelwerk für dieses Projekt. Halte dich daran. Wenn du etwas Dauerhaftes erreichst oder "
+    "lernst (Teil fertig, Entscheidung, Stolperfalle, nächster Schritt), trägst du es knapp mit edit_file im "
+    "Abschnitt „Stand“ dieser Datei nach, damit ein neuer Chat nahtlos weitermachen kann. Keine Romane: die "
+    "Datei bleibt kurz und aktuell."
+)
+
+
+def find_project(cwd, limit=6000):
+    """Sucht SPIKE.md im Arbeitsordner und darüber (höchstens bis ~). Gibt (Pfad, Text) oder None zurück."""
+    try:
+        d = Path(cwd).resolve()
+        home = Path.home().resolve()
+    except OSError:
+        return None
+    inside = d == home or home in d.parents
+    for cand in ([d, *d.parents] if inside else [d]):
+        f = cand / PROJECT_FILE
+        try:
+            if f.is_file():
+                text = f.read_text(encoding="utf-8").strip()
+                if text:
+                    return f, (text[:limit] + ("\n… (gekürzt)" if len(text) > limit else ""))
+        except OSError:
+            pass
+        if cand == home:
+            break
+    return None
 
 
 def anleitungen(limit=8000) -> str:
@@ -291,6 +338,10 @@ class Agent(QObject):
         guide = anleitungen()
         if guide:
             system = (system + "\n\n" + guide).strip()
+        proj = find_project(getattr(self.toolbox, "cwd", Path.home()))
+        if proj:
+            system = (system + "\n\n" + PROJECT_HOWTO.format(path=proj[0]) +
+                      f"\n\n## Projekt: {proj[0].parent.name}\n{proj[1]}").strip()
         if not s.get("memory_enabled", True):
             return system
         # Auszug einmal pro Chat bilden und dann gleich lassen (Prompt-Cache des Servers bleibt gültig)
