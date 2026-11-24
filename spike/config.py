@@ -123,6 +123,9 @@ DEFAULT_CONFIG = {
         "web_enabled": False, "web_port": 8765, "web_https": True,
         # Andere Rechner per SSH: [{"name", "target": "user@host[:port]", "mode": "voll"|"lesen", "note"}]
         "ssh_hosts": [],
+        # Home Assistant (optional): URL + langlebiger Token, nur lesen oder schalten, Sperrliste, Push-Ziel
+        "ha_enabled": False, "ha_url": "", "ha_token": "", "ha_mode": "lesen",
+        "ha_block": ["lock.*", "alarm_control_panel.*"], "ha_notify": "", "ha_watch_push": False,
         "watch_enabled": True,                    # Hauptschalter Wachposten (👁 unter dem Eingabefeld)
     },
 }
@@ -182,6 +185,13 @@ def _migrate(cfg) -> bool:
             if isinstance(t, list) and "run_shell" in t and "*" not in t:
                 t.extend(x for x in ("remote_shell", "remote_copy") if x not in t)
         done.add("ssh")
+        changed = True
+    if "ha" not in done:    # Home-Assistant-Werkzeuge für Profile mit Werkzeugen (wirken erst, wenn HA an ist)
+        for p in cfg["profiles"]:
+            t = p.get("tools")
+            if isinstance(t, list) and "run_shell" in t and "*" not in t:
+                t.extend(x for x in ("ha_states", "ha_state", "ha_call", "ha_history", "ha_camera", "ha_push") if x not in t)
+        done.add("ha")
         changed = True
     if "watch" not in done:    # Wachposten für Profile, die Shell-Befehle dürfen
         for p in cfg["profiles"]:

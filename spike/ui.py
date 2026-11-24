@@ -102,6 +102,7 @@ class Bridge(QObject):
     stt_done = Signal(str, str, str)               # text, info, fehler
     speech_state = Signal(str)
     ssh_tested = Signal(str)                       # Ergebnis „Verbindung testen“ (Rechner/SSH)
+    ha_tested = Signal(str, list)                  # Ergebnis „Verbindung testen“ (Home Assistant), Push-Ziele
     shell_update = Signal()                       # !-Befehl: neue Ausgabe
     shell_done = Signal()
 
@@ -464,6 +465,7 @@ class SettingsDialog(QDialog):
         self.phone = PhoneTab(s, getattr(ctrl, "web", None))
         pages.append((self.phone, "Handy"))
         pages.append((self._ssh_tab(s), "Rechner (SSH)"))
+        pages.append((self._ha_tab(s), "Home Assistant"))
         for page, title in sorted(pages, key=lambda pt: pt[1].replace("&&", "&").casefold()):
             tabs.addTab(page, title)
         if isinstance(tab, str):
@@ -479,6 +481,91 @@ class SettingsDialog(QDialog):
         lay.addWidget(bb)
 
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _ha_tab(self, s):
+        """Home Assistant optional einbinden: Adresse, Token, Rechte, Sperrliste, Push-Ziel."""
+        from . import ha
+        w = QWidget()
+        f = QFormLayout(w)
+        intro = QLabel("Optional: spike liest Zustände aus Home Assistant, schaltet Geräte, zeigt Verlauf und "
+                       "Kamerabilder und schickt Pushs aufs Handy. Ausgeschaltet sieht das Modell keine dieser "
+                       "Werkzeuge. Den Token legst du in Home Assistant an: Profil → Sicherheit → "
+                       "„Langlebige Zugangs-Token“ → Token erstellen.")
+        intro.setWordWrap(True)
+        f.addRow(intro)
+        self.ha_on = QCheckBox("Home Assistant verwenden")
+        self.ha_on.setChecked(bool(s.get("ha_enabled")))
+        f.addRow(self.ha_on)
+        self.ha_url = QLineEdit(s.get("ha_url", ""))
+        self.ha_url.setPlaceholderText("http://homeassistant.local:8123")
+        f.addRow("Adresse", self.ha_url)
+        self.ha_token = QLineEdit(s.get("ha_token", ""))
+        self.ha_token.setEchoMode(QLineEdit.Password)
+        self.ha_token.setPlaceholderText("langlebiger Zugangs-Token")
+        f.addRow("Token", self.ha_token)
+        self.ha_mode = QComboBox()
+        self.ha_mode.addItem("Nur lesen – Zustände, Verlauf, Kamerabilder", "lesen")
+        self.ha_mode.addItem("Schalten erlauben – Licht, Steckdosen, Heizung … (Freigabe je nach Modus)", "schalten")
+        self.ha_mode.setCurrentIndex(max(0, self.ha_mode.findData(s.get("ha_mode", "lesen"))))
+        f.addRow("Rechte", self.ha_mode)
+        block = s.get("ha_block")
+        self.ha_block = QLineEdit(", ".join(ha.DEFAULT_BLOCK if block is None else block))
+        self.ha_block.setPlaceholderText("lock.*, alarm_control_panel.*, switch.server")
+        self.ha_block.setToolTip("Geräte, die spike nie schalten darf (auch nicht im Yolo-Modus). Muster mit *, "
+                                 "durch Komma getrennt.")
+        f.addRow("Nie schalten", self.ha_block)
+        self.ha_notify = QComboBox()
+        self.ha_notify.setEditable(True)
+        self.ha_notify.addItem("(kein Push)", "")
+        if s.get("ha_notify"):
+            self.ha_notify.addItem(s["ha_notify"], s["ha_notify"])
+            self.ha_notify.setCurrentIndex(1)
+        self.ha_notify.setToolTip("Wohin Pushs gehen – nach „Verbindung testen“ stehen hier die Ziele aus Home "
+                                  "Assistant (z. B. notify.mobile_app_mein_handy).")
+        f.addRow("Push-Ziel", self.ha_notify)
+        self.ha_wpush = QCheckBox("Wachposten-Meldungen zusätzlich als Push aufs Handy")
+        self.ha_wpush.setChecked(bool(s.get("ha_watch_push")))
+        f.addRow(self.ha_wpush)
+        test = QPushButton("Verbindung testen")
+        res = QLabel()
+        res.setWordWrap(True)
+        res.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        f.addRow(test, res)
+
+        def run_test():
+            st = {"ha_url": self.ha_url.text().strip(), "ha_token": self.ha_token.text().strip()}
+            if not st["ha_url"] or not st["ha_token"]:
+                res.setText("Erst Adresse und Token eintragen.")
+                return
+            res.setText("prüfe …")
+            test.setEnabled(False)
+
+            def job():
+                self._bridge.ha_tested.emit(ha.test(st), ha.notify_services(st))
+            threading.Thread(target=job, daemon=True).start()
+
+        def done(txt, targets):
+            res.setText(txt)
+            test.setEnabled(True)
+            cur = self.ha_notify.currentData() or self.ha_notify.currentText()
+            self.ha_notify.clear()
+            self.ha_notify.addItem("(kein Push)", "")
+            for t in targets:
+                self.ha_notify.addItem(t, t)
+            i = self.ha_notify.findData(cur)
+            self.ha_notify.setCurrentIndex(max(0, i))
+        self._bridge.ha_tested.connect(done)
+        test.clicked.connect(run_test)
+        return w
+
+    def _ha_values(self):
+        t = self.ha_notify.currentData()
+        if t is None:            # selbst eingetippt
+            t = self.ha_notify.currentText().strip()
+        return dict(ha_enabled=self.ha_on.isChecked(), ha_url=self.ha_url.text().strip().rstrip("/"),
+                    ha_token=self.ha_token.text().strip(), ha_mode=self.ha_mode.currentData(),
+                    ha_block=[x.strip() for x in self.ha_block.text().split(",") if x.strip()],
+                    ha_notify=t if str(t).startswith("notify.") else "", ha_watch_push=self.ha_wpush.isChecked())
 
     def _ssh_tab(self, s):
         """Andere Rechner, auf denen spike per SSH arbeiten darf."""
@@ -998,7 +1085,7 @@ class SettingsDialog(QDialog):
                  memory_enabled=self.cb_mem.isChecked(), memory_prompt_chars=self.sp_mem.value(),
                  auto_compact=self.cb_compact.isChecked(), compact_at_percent=self.sp_cat.value(),
                  compact_keep_percent=self.sp_ckeep.value(), python_timeout=self.sp_pyto.value(),
-                 **{k: get() for k, get in self.sp_fields.items()}, **self.phone.values())
+                 **{k: get() for k, get in self.sp_fields.items()}, **self.phone.values(), **self._ha_values())
         return self.cfg
 
 

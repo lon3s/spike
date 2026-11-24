@@ -72,6 +72,12 @@ JOB_HOWTO = (
     "Fortschritt live (und die Fertig-Meldung bringt ohnehin nur das Log-Ende)."
 )
 
+HA_HOWTO = (
+    "Home Assistant ist verbunden: Fragen zum Zuhause (Licht, Temperatur, Türen, Anwesenheit, Geräte, Kameras) "
+    "beantwortest du mit ha_states/ha_state/ha_history – entity_ids nie raten, erst suchen (search mit 1–2 Wörtern, "
+    "domain oder area). Antworte mit Namen statt entity_ids."
+)
+
 SSH_HOWTO = (
     "Andere Rechner (remote_shell, remote_copy, job_start mit host): Wenn der Nutzer einen dieser Rechner nennt "
     "(Name, IP oder Beschreibung), arbeitest du DORT per remote_shell – nicht mit run_shell auf diesem PC. "
@@ -254,7 +260,7 @@ class Agent(QObject):
             self._system_prompt(), self.chat["messages"], 0, 0,
             int(s.get("keep_full_tool_results", 2)), int(s.get("old_tool_result_chars", 300)),
             self.chat.get("summary", ""), int(self.chat.get("summary_upto", 0)), self.vision)
-        tools = specs_for(self.profile.get("tools", []))
+        tools = specs_for(self.profile.get("tools", []), self.settings)
         est = estimate_tokens(payload) + (estimate_tokens([{"t": json.dumps(tools)}]) if tools else 0)
         self.usage.emit(est, self.n_ctx or 0, -1.0)
         return est
@@ -322,6 +328,8 @@ class Agent(QObject):
             return f"run_shell:{words[0]}" if words else ""
         if name == "watch_add":
             return "watch_add"
+        if name == "ha_call":            # „Immer erlauben“ gilt für diesen Dienst (z. B. light.turn_on)
+            return f"ha:{args.get('domain', '')}.{args.get('service', '')}"
         if name == "remote_copy":
             return f"ssh:{str(args.get('host') or '').strip().lower()}:copy"
         if name in ("pc", "git"):
@@ -332,6 +340,8 @@ class Agent(QObject):
     def allow_label(key):
         if key.startswith("run_shell:"):
             return f"Befehle mit „{key.split(':', 1)[1]}“"
+        if key.startswith("ha:"):
+            return f"Home Assistant: {key[3:]}"
         if key.startswith("ssh:"):
             _, host, prog = key.split(":", 2)
             return f"Kopieren auf/von {host}" if prog == "copy" else f"Befehle mit „{prog}“ auf {host}"
@@ -370,6 +380,7 @@ class Agent(QObject):
             return True
         short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
                  f"{key.split(':')[1]}: „{key.split(':', 2)[2]}“" if key.startswith("ssh:") else
+                 f"HA: {key[3:]}" if key.startswith("ha:") else
                  {"pc:open": "Öffnen", "git:commit": "Commit", "git:push": "Push", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
                   "python_run": "Python"}.get(key, key[:18]))
         self.pending = {"text": text, "key": key, "label": self.allow_label(key) if key else "", "short": short,
@@ -402,6 +413,11 @@ class Agent(QObject):
             system = (system + "\n\n" + GIT_HOWTO).strip()
         if "job_start" in tools:
             system = (system + "\n\n" + JOB_HOWTO).strip()
+        if "ha_states" in tools:
+            from . import ha
+            if ha.enabled(s):
+                system = (system + "\n\n" + HA_HOWTO + (" Schalten ist erlaubt (ha_call)." if s.get("ha_mode") == "schalten"
+                          else " Nur Lesen ist erlaubt – schalten kann der Nutzer selbst.")).strip()
         if "remote_shell" in tools:
             from . import remote
             liste = remote.describe(s)
@@ -589,7 +605,7 @@ class Agent(QObject):
     def _loop(self):
         msgs = self.chat["messages"]
         s = self.settings
-        tools = specs_for(self.profile.get("tools", []))
+        tools = specs_for(self.profile.get("tools", []), self.settings)
         system = self._system_prompt()
         max_tokens = int(self.profile.get("max_tokens") or 0)
         params = {"temperature": float(self.profile.get("temperature", 0.7))}

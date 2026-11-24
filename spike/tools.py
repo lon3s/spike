@@ -66,6 +66,27 @@ TOOL_SPECS = {
                         "job_start mit host.",
                         {"host": {"type": "string", "description": "Name des Rechners"},
                          "command": {"type": "string"}}, ["host", "command"]),
+    "ha_states": _fn("ha_states", "Home Assistant: Geräte/Sensoren mit aktuellem Zustand suchen. search = Wörter aus "
+                     "Name oder entity_id (z. B. „wohnzimmer licht“), domain = light/sensor/climate/…, area = Raumname. "
+                     "Ohne Angaben: die wichtigsten Geräte.",
+                     {"search": {"type": "string"}, "domain": {"type": "string"}, "area": {"type": "string"}}),
+    "ha_state": _fn("ha_state", "Home Assistant: ein Gerät im Detail (alle Attribute, wann zuletzt geändert).",
+                    {"entity_id": {"type": "string"}}, ["entity_id"]),
+    "ha_call": _fn("ha_call", "Home Assistant: Dienst aufrufen = schalten (Nutzer bestätigt je nach Modus). Beispiele: "
+                   "light/turn_on (data {\"brightness_pct\": 50}), switch/turn_off, climate/set_temperature "
+                   "(data {\"temperature\": 21}), scene/turn_on, cover/close_cover, media_player/volume_set. "
+                   "entity_id vorher mit ha_states nachsehen, nicht raten.",
+                   {"domain": {"type": "string"}, "service": {"type": "string"},
+                    "entity_id": {"type": "string", "description": "eine oder mehrere, mit Komma getrennt"},
+                    "data": {"type": "object", "description": "weitere Felder des Dienstes"}},
+                   ["domain", "service"]),
+    "ha_history": _fn("ha_history", "Home Assistant: Verlauf eines Geräts (Zustandswechsel), z. B. wann die Tür offen war.",
+                      {"entity_id": {"type": "string"}, "hours": {"type": "number", "description": "Standard 24"}},
+                      ["entity_id"]),
+    "ha_camera": _fn("ha_camera", "Home Assistant: aktuelles Bild einer Kamera (camera.…) holen und ansehen "
+                     "(nur mit Bildverständnis/Vision).", {"entity_id": {"type": "string"}}, ["entity_id"]),
+    "ha_push": _fn("ha_push", "Schickt dem Nutzer eine Push-Nachricht aufs Handy (eingestelltes Ziel in Home Assistant).",
+                   {"message": {"type": "string"}, "title": {"type": "string"}}, ["message"]),
     "watch_add": _fn("watch_add", "Richtet einen Wachposten ein: ein kurzer Prüf-Befehl läuft alle paar Minuten "
                      "(lokal oder mit host auf einem SSH-Rechner, ohne sudo-Passwort); wenn die Bedingung NEU eintritt, "
                      "wird der Nutzer benachrichtigt (action melden) bzw. du bekommst eine Nachricht und reagierst "
@@ -208,6 +229,9 @@ TOOL_LABELS = {
     "ask_user": "Rückfrage mit Auswahl", "git": "Git: committen & pushen ⚠",
     "job_start": "Hintergrundauftrag starten ⚠", "job_status": "Hintergrundaufträge: Stand & Log",
     "job_stop": "Hintergrundauftrag abbrechen",
+    "ha_states": "Home Assistant: Zustände", "ha_state": "Home Assistant: Gerät im Detail",
+    "ha_call": "Home Assistant: schalten ⚠", "ha_history": "Home Assistant: Verlauf",
+    "ha_camera": "Home Assistant: Kamerabild", "ha_push": "Home Assistant: Push aufs Handy",
     "watch_add": "Wachposten einrichten ⚠", "watch_list": "Wachposten anzeigen", "watch_delete": "Wachposten löschen",
     "watch_toggle": "Wachposten an/aus",
     "remote_shell": "Andere Rechner: Befehle per SSH ⚠", "remote_copy": "Andere Rechner: Dateien kopieren ⚠",
@@ -942,6 +966,66 @@ class ToolBox:
         rc, out, _ = self._run_argv(argv, "", on_output=self.on_output)
         return (f"Kopiert: {what}" if rc == 0 else f"Fehler beim Kopieren (exit {rc}): {what}\n{clip_tail(out, 1500)}")
 
+    # --- Home Assistant (nur wenn in den Einstellungen eingeschaltet) ---
+    def _ha(self, fn, *a, **k):
+        from . import ha
+        if not ha.enabled(self.settings):
+            return "Home Assistant ist nicht eingerichtet (⚙ Einstellungen → Home Assistant)."
+        try:
+            return fn(self.settings, *a, **k)
+        except ha.HAError as e:
+            return f"Fehler: {e}"
+
+    def t_ha_states(self, search="", domain="", area="", confirm=None):
+        from . import ha
+        return clip(self._ha(ha.states, search, domain, area), self.limit)
+
+    def t_ha_state(self, entity_id, confirm=None):
+        from . import ha
+        return self._ha(ha.state, entity_id)
+
+    def t_ha_history(self, entity_id, hours=24, confirm=None):
+        from . import ha
+        return clip_tail(self._ha(ha.history, entity_id, hours), self.limit)
+
+    def t_ha_call(self, domain, service, entity_id="", data=None, confirm=None):
+        from . import ha
+        if not ha.enabled(self.settings):
+            return "Home Assistant ist nicht eingerichtet (⚙ Einstellungen → Home Assistant)."
+        if self.settings.get("ha_mode", "lesen") != "schalten":
+            return ("Gesperrt: Home Assistant ist nur zum Lesen freigegeben. Sag dem Nutzer, was du schalten würdest; "
+                    "er kann unter ⚙ Einstellungen → Home Assistant „Schalten“ erlauben.")
+        ids = [e.strip() for e in str(entity_id or (data or {}).get("entity_id", "")).split(",") if e.strip()]
+        bad = [e for e in ids if ha.blocked(self.settings, e)] + \
+              ([f"{domain}.*"] if ha.blocked(self.settings, f"{domain}.x") and not ids else [])
+        if bad:
+            return f"Gesperrt: {', '.join(bad)} steht auf der Sperrliste – das darf spike nie schalten."
+        extra = f"\nDaten: {json.dumps(data, ensure_ascii=False)}" if data else ""
+        if not confirm(f"Home Assistant: {domain}.{service}\n{', '.join(ids) or '(ohne Gerät)'}{extra}"):
+            return "Vom Nutzer abgelehnt."
+        data = {k: v for k, v in (data or {}).items() if k != "entity_id"}
+        return self._ha(ha.call, domain, service, ",".join(ids), data)
+
+    def t_ha_camera(self, entity_id, confirm=None):
+        from . import ha, attachments
+        if not self.vision:
+            return "Das aktuelle Modell kann keine Bilder sehen – Kamerabild nicht möglich (Vision-Modell nötig)."
+        if not ha.enabled(self.settings):
+            return "Home Assistant ist nicht eingerichtet (⚙ Einstellungen → Home Assistant)."
+        try:
+            img = ha.camera(self.settings, entity_id)
+        except ha.HAError as e:
+            return f"Fehler: {e}"
+        attachments.ATT_DIR.mkdir(parents=True, exist_ok=True)
+        f = attachments.ATT_DIR / f"ha-{entity_id.replace('.', '_')}-{int(__import__('time').time())}.jpg"
+        f.write_bytes(img)
+        self._images.append({"name": f.name, "path": str(f), "orig": "", "kind": "image", "size": len(img)})
+        return f"Bild von {entity_id} geholt – es folgt als nächste Nachricht."
+
+    def t_ha_push(self, message, title="spike", confirm=None):
+        from . import ha
+        return self._ha(ha.push, message, title)
+
     # --- Wachposten ---
     def t_watch_add(self, name, command, cond, value="", host="", interval=5, action="melden", task="",
                     may_act=False, confirm=None):
@@ -1583,9 +1667,26 @@ def expand(names):
     return list(names or [])
 
 
-def specs_for(names):
+HA_TOOLS = ("ha_states", "ha_state", "ha_call", "ha_history", "ha_camera", "ha_push")
+
+
+def specs_for(names, settings=None):
+    """settings: ausgeschaltete Bereiche (Home Assistant, SSH ohne Rechner) gar nicht erst anbieten – spart Kontext."""
     out = []
+    skip = set()
+    if settings is not None:
+        from . import ha
+        if not ha.enabled(settings):
+            skip.update(HA_TOOLS)
+        elif settings.get("ha_mode", "lesen") != "schalten":
+            skip.add("ha_call")
+        if not settings.get("ha_notify"):
+            skip.add("ha_push")
+        if not remote.hosts(settings):
+            skip.update(("remote_shell", "remote_copy"))
     for n in expand(names):
+        if n in skip:
+            continue
         if n in TOOL_SPECS:
             out.append(TOOL_SPECS[n])
         elif n in plugins.PLUGINS:

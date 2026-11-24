@@ -50,6 +50,13 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Shell-Befehlen, „Immer erlauben“ gilt nur für diesen Rechner) oder **nur lesen** (Status, Logs, Dateien ansehen ohne
   Rückfrage, alles Ändernde gesperrt – ein Komfort-Schutz, keine Sicherheitsgrenze). sudo klappt ohne Passwort
   (NOPASSWD) direkt, sonst fragt spike einmal pro Rechner und Sitzung (nur im Arbeitsspeicher, nie auf der Befehlszeile).
+- **Home Assistant** (optional, ⚙ → Home Assistant, Standard aus): Adresse + langlebigen Zugangs-Token eintragen
+  (HA → Profil → Sicherheit), „Verbindung testen“. Dann z. B. „Wie warm ist es im Büro?“, „War heute die Haustür
+  offen?“, „Mach das Licht im Wohnzimmer aus.“ Werkzeuge `ha_states` (Suche nach Name, Raum oder Domain),
+  `ha_state`, `ha_history`, `ha_camera` (Kamerabild, mit Vision-Modell), `ha_call` (schalten – nur wenn unter Rechte
+  „Schalten erlauben“ gewählt ist, Freigabe je nach Modus) und `ha_push` (Push aufs eingestellte Handy). Die Liste
+  **Nie schalten** (Standard `lock.*, alarm_control_panel.*`) gilt immer, auch im Yolo-Modus. Wachposten-Meldungen
+  können zusätzlich als Push kommen. Ausgeschaltet sieht das Modell keines dieser Werkzeuge.
 - **Wachposten** (`watch_add`, `watch_list`, `watch_delete`, `watch_toggle`): „Sag mir Bescheid, wenn die Platte
   auf dem Server über 90 % ist“ – spike führt alle paar Minuten einen kleinen Prüf-Befehl aus (lokal oder auf einem
   SSH-Rechner, ohne Modell) und meldet sich nur, wenn die Bedingung **neu** eintritt (Ausgabe enthält/fehlt, Befehl

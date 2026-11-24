@@ -200,9 +200,17 @@ class Controller:
                              "cwd": "", "rc": rc, "dur": time.strftime("%H:%M"), "icon": "👁"}}
 
     def _watch_fired(self, w, rc, out, server_up):
-        from . import scheduler as S
+        from . import scheduler as S, ha
         cid = w.get("chat") or ""
         last = (out or "").strip().splitlines()[-1:] or ["(keine Ausgabe)"]
+        s = self._settings()
+        if s.get("ha_watch_push") and ha.enabled(s) and s.get("ha_notify"):     # zusätzlich aufs Handy
+            def send(st=dict(s)):
+                try:
+                    ha.push(st, last[0][:300], f"👁 {w['name'][:60]}")
+                except Exception as e:
+                    print("Wachposten-Push:", e)
+            threading.Thread(target=send, daemon=True).start()
         if w.get("action") == "reagieren" and server_up and cid:
             self._deliver(self.watch_message(w, rc, out), cid, f"👁 {w['name'][:50]}", urgent=True,
                           may_act=bool(w.get("may_act")))
