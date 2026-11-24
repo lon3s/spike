@@ -1645,6 +1645,116 @@ class JobChip(QToolButton):
             a.setEnabled(False)
 
 
+class _WatchBus(QObject):
+    changed = Signal()
+
+
+_WATCH_BUS = None
+
+
+def watch_bus() -> _WatchBus:
+    global _WATCH_BUS
+    if _WATCH_BUS is None:
+        from . import watch as W
+        _WATCH_BUS = _WatchBus()
+        W.ON_CHANGE.append(_WATCH_BUS.changed.emit)
+    return _WATCH_BUS
+
+
+class WatchChip(QToolButton):
+    """👁 Wachposten: Hauptschalter + Liste (an/aus, jetzt prüfen, löschen). Unsichtbar, solange es keine gibt."""
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.setObjectName("WatchChip")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(self)
+        m.aboutToShow.connect(lambda: (m.clear(), self._fill(m)))
+        self.setMenu(m)
+        watch_bus().changed.connect(self.refresh)
+        self.hide()
+        self.refresh()
+
+    def _on(self):
+        return bool(self.win.cfg["settings"].get("watch_enabled", True))
+
+    def refresh(self):
+        from . import watch as W
+        ws = list(W.WATCHES.values())
+        if not ws:
+            self.hide()
+            return
+        active = [w for w in ws if w.get("enabled")]
+        fired = [w for w in active if w.get("state")]
+        if not self._on():
+            self.setText("👁 aus")
+            tip = "Wachposten sind ausgeschaltet (Hauptschalter)"
+        else:
+            self.setText(f"👁 {len(active)}" + (f" · ⚠ {len(fired)}" if fired else ""))
+            tip = "\n".join(("⚠ " if w.get("state") else "• " if w.get("enabled") else "○ ") + w["name"] for w in ws)
+        self.setToolTip(tip + "\n\nKlick: an/aus, prüfen, löschen")
+        self.setProperty("warn", bool(fired) and self._on())
+        self.setProperty("off", not self._on())
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.show()
+
+    def _set_main(self, on):
+        from . import config as C
+        self.win.cfg["settings"]["watch_enabled"] = on
+        C.save_config(self.win.cfg)
+        ctrl = getattr(self.win, "ctrl", None)
+        for w in ((ctrl.main, ctrl.popup) if ctrl else ()):
+            if w is not None and w is not self.win:
+                w.cfg["settings"]["watch_enabled"] = on
+        watch_bus().changed.emit()
+        if on and ctrl:
+            QTimer.singleShot(500, ctrl._watch_tick)
+
+    def _check_now(self, w):
+        ctrl = getattr(self.win, "ctrl", None)
+        if ctrl and not w.get("running"):
+            w["last_check"] = 0
+            w["running"] = True
+            threading.Thread(target=ctrl._watch_run, args=(w, self.win.cfg["settings"], ctrl._endpoint()),
+                             daemon=True).start()
+
+    def _fill(self, m):
+        from . import watch as W
+        a = m.addAction("Wachposten eingeschaltet")
+        a.setCheckable(True)
+        a.setChecked(self._on())
+        a.toggled.connect(self._set_main)
+        m.addSeparator()
+        for w in sorted(W.WATCHES.values(), key=lambda w: w.get("created", 0)):
+            mark = "⚠" if w.get("state") and w.get("enabled") else "●" if w.get("enabled") else "○"
+            where = f" · {w['host']}" if w.get("host") else ""
+            sub = m.addMenu(f"{mark}  {w['name'][:40]}{where}")
+            info = [f"alle {w['interval']} min · wenn {W.CONDS[w['cond']]}" + (f" „{w['value']}“" if w.get("value") else "")
+                    + f" → {w['action']}"]
+            if w.get("last_check"):
+                info.append(f"zuletzt geprüft {time.strftime('%H:%M', time.localtime(w['last_check']))}"
+                            + (f" · ausgelöst {w.get('hits', 0)}×" if w.get("hits") else ""))
+            last = (w.get("last_out") or "").strip().splitlines()[-1:]
+            if last and last[0]:
+                info.append("→ " + last[0][:60])
+            if w.get("error"):
+                info.append("⚠ " + w["error"][:60])
+            for t in info:
+                x = sub.addAction(t)
+                x.setEnabled(False)
+            sub.addSeparator()
+            on = sub.addAction("Eingeschaltet")
+            on.setCheckable(True)
+            on.setChecked(bool(w.get("enabled")))
+            on.toggled.connect(lambda v, i=w["id"]: W.set_enabled(i, v))
+            sub.addAction("↻ Jetzt prüfen", lambda w=w: self._check_now(w))
+            if w.get("chat") and getattr(self.win, "ctrl", None):
+                sub.addAction("💬 Zum Chat", lambda c=w["chat"]: self.win.ctrl.show_main(c))
+            sub.addAction("🗑 Löschen", lambda i=w["id"]: W.remove(i))
+
+
 class JobLogDialog(QDialog):
     """Log eines Auftrags, aktualisiert sich jede Sekunde, solange er läuft."""
     _open: dict = {}
@@ -2004,6 +2114,7 @@ class MainWindow(QMainWindow):
         self.meta_perm.setMenu(m_perm2)
         ml_.addWidget(self.meta_perm)
         self.job_chip = JobChip(self)      # laufende Hintergrundaufträge (Platz: siehe _arrange_composer)
+        self.watch_chip = WatchChip(self)  # Wachposten mit Hauptschalter
         meta_help = QToolButton()
         meta_help.setObjectName("MetaBtn")
         meta_help.setText("?")
@@ -2183,7 +2294,7 @@ class MainWindow(QMainWindow):
             while lay.count():
                 lay.takeAt(0)
         meta_w = (self.meta_bar, self.meta_ctx, self.meta_speed)
-        for w in meta_w + (self.job_chip,):
+        for w in meta_w + (self.job_chip, self.watch_chip):
             self.meta_lay.removeWidget(w)
         self.btn_compact.setVisible(compact)
         for w in (self.btn_think, self.btn_perm, self.status):
@@ -2197,12 +2308,13 @@ class MainWindow(QMainWindow):
             for i, w in enumerate(meta_w):
                 self.meta_lay.insertWidget(i, w, 0, Qt.AlignVCenter if i == 0 else Qt.Alignment())
             self.meta_lay.insertWidget(len(meta_w), self.job_chip, 0, Qt.AlignVCenter)
+            self.meta_lay.insertWidget(len(meta_w) + 1, self.watch_chip, 0, Qt.AlignVCenter)
         else:
             self.cl_top.addWidget(self.input, 1)
             for w in (self.btn_think, self.btn_perm):
                 w.setFixedHeight(28)
             ch = self.cl_chips
-            for w in (self.btn_attach, self.btn_think, self.btn_perm, self.job_chip):
+            for w in (self.btn_attach, self.btn_think, self.btn_perm, self.job_chip, self.watch_chip):
                 ch.addWidget(w, 0, Qt.AlignVCenter)
             ch.addSpacing(6)
             ch.addWidget(self.meta_bar, 0, Qt.AlignVCenter)

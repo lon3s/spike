@@ -320,6 +320,8 @@ class Agent(QObject):
             if host:            # andere Rechner: Freigabe gilt nur für diesen Rechner
                 return f"ssh:{host}:{words[0]}" if words else ""
             return f"run_shell:{words[0]}" if words else ""
+        if name == "watch_add":
+            return "watch_add"
         if name == "remote_copy":
             return f"ssh:{str(args.get('host') or '').strip().lower()}:copy"
         if name in ("pc", "git"):
@@ -339,7 +341,7 @@ class Agent(QObject):
             return {"git:commit": "Git-Commits", "git:push": "Git-Push", "git:pull": "Git-Pull"}.get(
                 key, "Git: " + key.split(":", 1)[1])
         return {"write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
-                "python_run": "Python ausführen"}.get(key, key)
+                "python_run": "Python ausführen", "watch_add": "Wachposten einrichten"}.get(key, key)
 
     def _confirm(self, text, diff=None) -> bool:
         if self.stopped:

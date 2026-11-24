@@ -209,6 +209,12 @@ def qss(c) -> str:
     QToolButton#JobChip:hover {{ background: {c['panel2']}; }}
     QToolButton#JobChip[warn="true"] {{ color: {c.get('danger', '#e5484d')}; border-color: {c.get('danger', '#e5484d')}; }}
     QToolButton#JobChip::menu-indicator {{ image: none; width: 0; }}
+    QToolButton#WatchChip {{ color: {c['muted']}; font-size: 8.5pt; background: transparent;
+                            border: 1px solid {c['border']}; border-radius: 11px; padding: 2px 9px 3px 9px; }}
+    QToolButton#WatchChip:hover {{ background: {c['panel2']}; color: {c['text']}; }}
+    QToolButton#WatchChip[warn="true"] {{ color: {c.get('danger', '#e5484d')}; border-color: {c.get('danger', '#e5484d')}; }}
+    QToolButton#WatchChip[off="true"] {{ color: {c['muted']}; border-style: dashed; }}
+    QToolButton#WatchChip::menu-indicator {{ image: none; width: 0; }}
     QMenu {{ background: {c['panel']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 8px;
             padding: 4px; }}
     QMenu::item {{ padding: 4px 20px 4px 24px; border-radius: 5px; }}

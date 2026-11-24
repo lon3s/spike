@@ -123,6 +123,7 @@ DEFAULT_CONFIG = {
         "web_enabled": False, "web_port": 8765, "web_https": True,
         # Andere Rechner per SSH: [{"name", "target": "user@host[:port]", "mode": "voll"|"lesen", "note"}]
         "ssh_hosts": [],
+        "watch_enabled": True,                    # Hauptschalter Wachposten (👁 unter dem Eingabefeld)
     },
 }
 
@@ -181,6 +182,13 @@ def _migrate(cfg) -> bool:
             if isinstance(t, list) and "run_shell" in t and "*" not in t:
                 t.extend(x for x in ("remote_shell", "remote_copy") if x not in t)
         done.add("ssh")
+        changed = True
+    if "watch" not in done:    # Wachposten für Profile, die Shell-Befehle dürfen
+        for p in cfg["profiles"]:
+            t = p.get("tools")
+            if isinstance(t, list) and "run_shell" in t and "*" not in t:
+                t.extend(x for x in ("watch_add", "watch_list", "watch_delete", "watch_toggle") if x not in t)
+        done.add("watch")
         changed = True
     if changed:
         cfg["settings"]["migrations"] = sorted(done)

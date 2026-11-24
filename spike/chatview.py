@@ -1031,7 +1031,7 @@ def job_card_info(m) -> dict:
     out = [r for r in rows if not r.startswith("# spike-Auftrag ") and r != "# " + ji.get("cmd", "").split("\n")[0]]
     while out and not out[0].strip():
         out.pop(0)
-    ji["title"] = f"⚙ {ji.get('name', '')[:40]} · {ji.get('dur', '')}"
+    ji["title"] = f"{ji.get('icon', '⚙')} {ji.get('name', '')[:40]} · {ji.get('dur', '')}"
     ji["out"] = "\n".join(out)
     return ji
 

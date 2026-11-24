@@ -50,6 +50,12 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Shell-Befehlen, „Immer erlauben“ gilt nur für diesen Rechner) oder **nur lesen** (Status, Logs, Dateien ansehen ohne
   Rückfrage, alles Ändernde gesperrt – ein Komfort-Schutz, keine Sicherheitsgrenze). sudo klappt ohne Passwort
   (NOPASSWD) direkt, sonst fragt spike einmal pro Rechner und Sitzung (nur im Arbeitsspeicher, nie auf der Befehlszeile).
+- **Wachposten** (`watch_add`, `watch_list`, `watch_delete`, `watch_toggle`): „Sag mir Bescheid, wenn die Platte
+  auf dem Server über 90 % ist“ – spike führt alle paar Minuten einen kleinen Prüf-Befehl aus (lokal oder auf einem
+  SSH-Rechner, ohne Modell) und meldet sich nur, wenn die Bedingung **neu** eintritt (Ausgabe enthält/fehlt, Befehl
+  schlägt fehl/klappt, Zahl über/unter, Ausgabe ändert sich). **Melden** = Benachrichtigung; **reagieren** = das
+  Modell bekommt eine Nachricht im Chat und kümmert sich – nur wenn der Modell-Server gerade läuft, sonst nur Meldung.
+  Chip `👁` unter dem Eingabefeld: Hauptschalter, jeden Wachposten einzeln an/aus, jetzt prüfen, löschen.
 - **Rückfragen mit Auswahl** (`ask_user`): Braucht das Modell eine Entscheidung, erscheint im Chat (und auf dem Handy)
   eine Karte mit Antwort-Knöpfen oder – bei `multi` – Häkchen zum Ankreuzen. Freie Antwort geht über das Eingabefeld.
 - **Kontext sparen**:

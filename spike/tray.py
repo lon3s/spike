@@ -9,6 +9,7 @@ spike --quit     → laufendes spike beenden
 import ctypes
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +54,7 @@ class _WebBridge(QObject):
     saved = Signal(str, object, bool)       # chat_id, geänderte Felder (oder None), gelöscht
     job_done = Signal(dict)                 # Hintergrundauftrag beendet (aus dem Beobachter-Thread)
     job_answered = Signal(str, str, str)    # chat_id, titel, antwort – Modell hat ohne Fenster reagiert
+    watch_fired = Signal(object, int, str, bool)   # wachposten, exit, ausgabe, modell-server erreichbar
 
 
 class Controller:
@@ -102,6 +104,15 @@ class Controller:
         from .ui import job_bus
         job_bus().changed.connect(self._jobs_tooltip)
         _J.restore()
+        # Wachposten: alle 30 s fällige Prüfungen starten (nur wenn Hauptschalter an und welche aktiv sind)
+        from . import watch as _W
+        _W.load()
+        self._wb.watch_fired.connect(self._watch_fired)
+        self._watch_timer = QTimer()
+        self._watch_timer.setInterval(30_000)
+        self._watch_timer.timeout.connect(self._watch_tick)
+        self._watch_timer.start()
+        QTimer.singleShot(20_000, self._watch_tick)
         # Popup schon kurz nach dem Start unsichtbar vorbereiten – sonst dauert der erste Klick ~1,5 s
         QTimer.singleShot(2500, self._ensure_popup)
 
@@ -132,29 +143,99 @@ class Controller:
                              + (f"\n⚙ {n} Hintergrundauftrag läuft" if n == 1 else
                                 f"\n⚙ {n} Hintergrundaufträge laufen" if n else ""))
 
+    # --- Wachposten ---
+    def _settings(self):
+        from . import config as C
+        w = self.main or self.popup
+        return w.cfg["settings"] if w is not None else C.load_config()["settings"]
+
+    def _watch_tick(self):
+        from . import watch as W
+        s = self._settings()
+        if not s.get("watch_enabled", True):
+            return
+        ep = self._endpoint()
+        for w in W.due():
+            w["running"] = True
+            threading.Thread(target=self._watch_run, args=(w, s, ep), daemon=True, name="wachposten").start()
+
+    def _endpoint(self):
+        win = self.main or self.popup
+        return dict(win.endpoint() or {}) if win is not None else None
+
+    def _watch_run(self, w, s, ep=None):
+        """Läuft im Hintergrund-Thread – fasst keine Fenster an."""
+        from . import watch as W
+
+        def fired(wd, rc, out, prev):
+            up = wd.get("action") == "reagieren" and self._server_up(ep)
+            self._wb.watch_fired.emit(wd, rc, out, up)
+        W.check(w, s, fired)
+
+    @staticmethod
+    def _server_up(ep) -> bool:
+        """Läuft der Modell-Server gerade? (kurze Anfrage, 3 s)"""
+        import urllib.request
+        if not ep or not ep.get("url"):
+            return False
+        url = ep["url"].rstrip("/")
+        url = (url if url.endswith("/v1") else url + "/v1") + "/models"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {ep['api_key']}"} if ep.get("api_key") else {})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return r.status < 500
+        except Exception:
+            return False
+
+    @staticmethod
+    def watch_message(w: dict, rc: int, out: str) -> dict:
+        from . import watch as W
+        where = f" auf {w['host']}" if w.get("host") else ""
+        val = f" „{w['value']}“" if w.get("value") else ""
+        text = (f"👁 Wachposten [{w['id']}] „{w['name']}“ hat angeschlagen ({W.CONDS[w['cond']]}{val}{where}).\n"
+                + (f"Dein Auftrag dafür: {w['task']}\n" if w.get("task") else "")
+                + f"Prüf-Befehl: {w['command']}\n--- Log-Ende ---\n{out[-2500:]}")
+        return {"role": "user", "content": text, "_job": f"watch-{w['id']}",
+                "_jobinfo": {"name": w["name"], "cmd": (f"[{w['host']}] " if w.get("host") else "") + w["command"],
+                             "cwd": "", "rc": rc, "dur": time.strftime("%H:%M"), "icon": "👁"}}
+
+    def _watch_fired(self, w, rc, out, server_up):
+        from . import scheduler as S
+        cid = w.get("chat") or ""
+        last = (out or "").strip().splitlines()[-1:] or ["(keine Ausgabe)"]
+        if w.get("action") == "reagieren" and server_up and cid:
+            self._deliver(self.watch_message(w, rc, out), cid, f"👁 {w['name'][:50]}", urgent=True,
+                          may_act=bool(w.get("may_act")))
+            return
+        note = "" if w.get("action") != "reagieren" else "\n(Modell-Server aus – nur gemeldet)"
+        S.notify(f"👁 {w['name'][:50]}", last[0][:300] + note, on_open=(lambda: self.show_main(cid)) if cid else None,
+                 urgent=True)
+
     def _job_done(self, job: dict, versuch=0):
-        from . import config as C, scheduler as S
         cid = job.get("chat") or ""
-        msg = self.job_message(job)
+        self._deliver(self.job_message(job), cid, f"⚙ {job['name'][:50]}", urgent=job.get("rc") not in (0, None))
+
+    def _deliver(self, msg: dict, cid: str, title: str, urgent=False, versuch=0, may_act=False):
+        """Nachricht in den Chat bringen: offenes Fenster → einschieben; sonst Modell ohne Fenster; sonst Meldung."""
+        from . import config as C, scheduler as S
         if cid:
             for w in (self.main, self.popup):      # Chat in einem Fenster offen → dort einschieben
                 if w is not None and w.chat and w.chat.get("id") == cid and w.inject_message(msg):
                     return
             if self.web and cid in self.web.runs or cid in self.job_runs:
                 if versuch < 120:                  # läuft gerade woanders – gleich nochmal
-                    QTimer.singleShot(5000, lambda: self._job_done(job, versuch + 1))
+                    QTimer.singleShot(5000, lambda: self._deliver(msg, cid, title, urgent, versuch + 1, may_act))
                 return
             try:
                 chat = C.load_chat(cid)
             except FileNotFoundError:
                 chat = None
-            if chat is not None and self._run_headless(chat, msg):
+            if chat is not None and self._run_headless(chat, msg, may_act):
                 return
-        title = f"⚙ {job['name'][:50]}"
         S.notify(title, msg["content"].split("\n", 1)[0], on_open=(lambda: self.show_main(cid)) if cid else None,
-                 urgent=job.get("rc") not in (0, None))
+                 urgent=urgent)
 
-    def _run_headless(self, chat: dict, msg: dict) -> bool:
+    def _run_headless(self, chat: dict, msg: dict, may_act=False) -> bool:
         """Chat ist nirgends offen: Modell ohne Fenster reagieren lassen (wie geplante Aufgaben, ohne Freigaben)."""
         from . import config as C, scheduler as S
         from .agent import Agent
@@ -174,7 +255,8 @@ class Controller:
         chat["messages"].append(msg)
         a = Agent(chat, ep, win.model_id(), prof, cfg["settings"], tb, n_ctx)
         a.vision = tb.vision = bool(win.vision.get(ep["name"]))
-        a.auto_deny = True
+        # ohne Fenster kann niemand freigeben: nur handeln, wenn ausdrücklich erlaubt UND Modus „Yolo“
+        a.auto_deny = not (may_act and cfg["settings"].get("perm_mode") == "alles")
         cid = chat["id"]
         self.job_runs[cid] = a
 

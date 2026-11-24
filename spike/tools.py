@@ -66,6 +66,29 @@ TOOL_SPECS = {
                         "job_start mit host.",
                         {"host": {"type": "string", "description": "Name des Rechners"},
                          "command": {"type": "string"}}, ["host", "command"]),
+    "watch_add": _fn("watch_add", "Richtet einen Wachposten ein: ein kurzer Prüf-Befehl läuft alle paar Minuten "
+                     "(lokal oder mit host auf einem SSH-Rechner, ohne sudo-Passwort); wenn die Bedingung NEU eintritt, "
+                     "wird der Nutzer benachrichtigt (action melden) bzw. du bekommst eine Nachricht und reagierst "
+                     "(action reagieren, nur wenn der Modell-Server läuft). Der Befehl soll schnell sein und wenig "
+                     "ausgeben (grep -c, tail -n, df --output=pcent, curl -fsS …). Bedingungen: enthaelt/fehlt "
+                     "(value = Regex), fehler/ok (Rückgabewert), ueber/unter (value = Zahl, erste Zahl der Ausgabe), "
+                     "aenderung (Ausgabe anders als zuletzt). Für Logs nur das Neue prüfen, z. B. "
+                     "„docker logs --since 6m frigate 2>&1 | grep -ci error“ mit ueber 0 bei interval 5.",
+                     {"name": {"type": "string", "description": "kurzer Name, z. B. „Platte zuhause“"},
+                      "command": {"type": "string"},
+                      "cond": {"type": "string", "enum": ["enthaelt", "fehlt", "fehler", "ok", "ueber", "unter", "aenderung"]},
+                      "value": {"type": "string", "description": "Regex oder Zahl (je nach cond)"},
+                      "host": {"type": "string", "description": "optional: SSH-Rechner"},
+                      "interval": {"type": "integer", "description": "Minuten zwischen den Prüfungen (Standard 5)"},
+                      "action": {"type": "string", "enum": ["melden", "reagieren"]},
+                      "task": {"type": "string", "description": "bei reagieren: was du dann tun sollst"},
+                      "may_act": {"type": "boolean", "description": "bei reagieren: darfst du dann ohne den Nutzer "
+                                  "Befehle ausführen (nur im Freigabe-Modus Yolo wirksam)? Nur wenn er es ausdrücklich will."}},
+                     ["name", "command", "cond"]),
+    "watch_list": _fn("watch_list", "Zeigt alle Wachposten mit Zustand und letzter Ausgabe."),
+    "watch_delete": _fn("watch_delete", "Löscht einen Wachposten.", {"id": {"type": "string"}}, ["id"]),
+    "watch_toggle": _fn("watch_toggle", "Schaltet einen Wachposten an oder aus (ohne id: alle – Hauptschalter).",
+                        {"id": {"type": "string"}, "on": {"type": "boolean"}}, ["on"]),
     "remote_copy": _fn("remote_copy", "Kopiert Dateien/Ordner zwischen diesem PC und einem SSH-Rechner (scp).",
                        {"host": {"type": "string"},
                         "richtung": {"type": "string", "enum": ["hoch", "runter"],
@@ -185,6 +208,8 @@ TOOL_LABELS = {
     "ask_user": "Rückfrage mit Auswahl", "git": "Git: committen & pushen ⚠",
     "job_start": "Hintergrundauftrag starten ⚠", "job_status": "Hintergrundaufträge: Stand & Log",
     "job_stop": "Hintergrundauftrag abbrechen",
+    "watch_add": "Wachposten einrichten ⚠", "watch_list": "Wachposten anzeigen", "watch_delete": "Wachposten löschen",
+    "watch_toggle": "Wachposten an/aus",
     "remote_shell": "Andere Rechner: Befehle per SSH ⚠", "remote_copy": "Andere Rechner: Dateien kopieren ⚠",
     "unteragent": "Unteragenten starten (parallel)",
 }
@@ -916,6 +941,68 @@ class ToolBox:
         argv = remote.scp_argv(h["target"], local if up else rpath, rpath if up else local, up)
         rc, out, _ = self._run_argv(argv, "", on_output=self.on_output)
         return (f"Kopiert: {what}" if rc == 0 else f"Fehler beim Kopieren (exit {rc}): {what}\n{clip_tail(out, 1500)}")
+
+    # --- Wachposten ---
+    def t_watch_add(self, name, command, cond, value="", host="", interval=5, action="melden", task="",
+                    may_act=False, confirm=None):
+        from . import watch as W
+        if host:
+            h, err = self._host(host)
+            if err:
+                return err
+            host = h["name"]
+            if h.get("mode") == "lesen" and not remote.is_readonly(command):
+                return f"Gesperrt: „{host}“ ist nur zum Lesen freigegeben – der Prüf-Befehl darf nichts ändern."
+        where = f" auf {host}" if host else ""
+        val = f" „{value}“" if value else ""
+        text = (f"Wachposten „{name}“ einrichten?\n\nAlle {interval} min{where}:\n{command}\n\nWenn: "
+                f"{W.CONDS.get(cond, cond)}{val} → {action}" + (f"\nDann: {task}" if task else "")
+                + ("\n⚠ darf dann selbst handeln" if may_act else ""))
+        if not confirm(text):
+            return "Vom Nutzer abgelehnt."
+        try:
+            w = W.add(name, command, cond, value, host, interval, action, task, self.sudo_key or "", may_act)
+        except Exception as e:
+            return f"Fehler: {e}"
+        rc, out = W.run_check(w, self.settings)          # einmal probelaufen lassen
+        hit = W.evaluate(w, rc, out)
+        aus = "" if self.settings.get("watch_enabled", True) else (
+            "\nHinweis: Der Hauptschalter für Wachposten ist AUS – der Nutzer schaltet ihn über 👁 unter dem "
+            "Eingabefeld ein.")
+        return (f"Wachposten [{w['id']}] eingerichtet. Probelauf: exit={rc}, Bedingung jetzt "
+                f"{'ERFÜLLT (meldet sich gleich)' if hit else 'nicht erfüllt' if hit is False else 'nicht prüfbar'}."
+                f"\nAusgabe: {clip_tail(out, 600) or '(leer)'}{aus}")
+
+    def t_watch_list(self, confirm=None):
+        from . import watch as W
+        if not W.WATCHES:
+            return "Keine Wachposten."
+        head = "Hauptschalter: " + ("an" if self.settings.get("watch_enabled", True) else "AUS") + "\n"
+        rows = []
+        for w in W.WATCHES.values():
+            last = (w.get("last_out") or "").strip().splitlines()[-1:] or [""]
+            rows.append(W.describe(w) + (f"\n   Befehl: {w['command'][:150]}") + (f"\n   zuletzt: {last[0][:150]}" if last[0] else "")
+                        + (f"\n   Fehler: {w['error']}" if w.get("error") else ""))
+        return head + "\n".join(rows)
+
+    def t_watch_delete(self, id, confirm=None):
+        from . import watch as W
+        return f"Wachposten {id} gelöscht." if W.remove(str(id)) else f"Kein Wachposten {id}."
+
+    def t_watch_toggle(self, on, id="", confirm=None):
+        from . import watch as W
+        if not id:
+            self.settings["watch_enabled"] = bool(on)
+            from . import config as C
+            cfg = C.load_config()
+            cfg["settings"]["watch_enabled"] = bool(on)
+            C.save_config(cfg)
+            W._changed()
+            return "Hauptschalter Wachposten: " + ("an" if on else "aus")
+        if str(id) not in W.WATCHES:
+            return f"Kein Wachposten {id}."
+        W.set_enabled(str(id), bool(on))
+        return f"Wachposten {id}: " + ("an" if on else "aus")
 
     # --- Hintergrundaufträge (laufen abgekoppelt weiter, Rückmeldung kommt in den Chat) ---
     def t_job_start(self, command, name="", host="", confirm=None):
