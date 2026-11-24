@@ -40,7 +40,16 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   währenddessen weiter oder beendet die Antwort. Ist der Auftrag fertig, erscheint im Chat automatisch eine Nachricht
   mit Rückgabewert und Log-Ende, auf die das Modell reagiert – auch wenn der Chat gerade geschlossen ist (dann ohne
   Freigaben, mit Benachrichtigung). Aufträge überleben einen Neustart von spike. `job_status` kann im Log filtern
-  (`grep="error|fehler"`), damit riesige Logs nicht den Kontext fluten.
+  (`grep="error|fehler"`), damit riesige Logs nicht den Kontext fluten. Unter dem Eingabefeld zeigt ein Chip
+  laufende Aufträge (`⚙ 62 % · 2:14` – Prozent, wenn das Programm welche ausgibt); ein Klick öffnet das Log live,
+  springt zum Chat oder stoppt den Auftrag. Die Fertig-Meldung erscheint als Terminal-Karte.
+- **Andere Rechner per SSH** (`remote_shell`, `remote_copy`, `job_start` mit `host`): Unter ⚙ → Rechner (SSH)
+  Rechner eintragen (`benutzer@host[:port]`, Anmeldung per SSH-Schlüssel, „Verbindung testen“). Dann z. B. „Wie voll
+  ist die Platte auf dem Server und läuft Docker?“ – spike arbeitet direkt dort, merkt sich pro Rechner den Ordner und
+  hält die Verbindung 5 min offen (Folgebefehle starten sofort). Rechte pro Rechner: **voll** (Freigabe wie bei
+  Shell-Befehlen, „Immer erlauben“ gilt nur für diesen Rechner) oder **nur lesen** (Status, Logs, Dateien ansehen ohne
+  Rückfrage, alles Ändernde gesperrt – ein Komfort-Schutz, keine Sicherheitsgrenze). sudo klappt ohne Passwort
+  (NOPASSWD) direkt, sonst fragt spike einmal pro Rechner und Sitzung (nur im Arbeitsspeicher, nie auf der Befehlszeile).
 - **Rückfragen mit Auswahl** (`ask_user`): Braucht das Modell eine Entscheidung, erscheint im Chat (und auf dem Handy)
   eine Karte mit Antwort-Knöpfen oder – bei `multi` – Häkchen zum Ankreuzen. Freie Antwort geht über das Eingabefeld.
 - **Kontext sparen**:
@@ -67,7 +76,8 @@ Werkzeuge (Websuche, Browser, Shell, Dateien) und System-Prompts pro Profil sind
   Relative Pfade gelten ab dem aktuellen Ordner (`!cd projekt`).
 - **Anhänge**: 📎, Drag & Drop oder Strg+V (Bilder aus der Zwischenablage). Text-/Code-Dateien und PDFs gehen als Text
   ans Modell (max. 30 000 Zeichen pro Datei), Bilder als Bild – sofern der Server Bilder versteht (llama.cpp mit
-  `--mmproj`, erkannt über `/props`). Nur die letzten 3 Bilder eines Chats werden mitgeschickt.
+  `--mmproj`, erkannt über `/props`). Nur die letzten 3 Bilder eines Chats werden mitgeschickt. Klick auf ein Bild im
+  Chat öffnet die Großansicht (Mausrad = Zoom, Ziehen, ← →, Esc); auf dem Handy antippen = Vollbild.
 - **Screenshots**: `/screenshot [Frage]` blendet das Popup aus, fotografiert den Bildschirm (Spectacle) und hängt das
   Bild an; das Modell kann mit dem Werkzeug `screenshot` auch selbst nachsehen.
 - **Erinnerungen und geplante Aufgaben**: „Erinnere mich in 20 min an den Tee“ → KDE-Benachrichtigung. „Sag mir jeden

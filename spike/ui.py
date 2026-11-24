@@ -496,7 +496,7 @@ class SettingsDialog(QDialog):
         def form(w, changed):
             f, fields = QFormLayout(w), {}
             _line(f, "name", "Name", changed, fields).setPlaceholderText("z. B. zuhause")
-            _line(f, "target", "Adresse", changed, fields).setPlaceholderText("benutzer@192.168.178.105  (Port: …:2222)")
+            _line(f, "target", "Adresse", changed, fields).setPlaceholderText("benutzer@192.168.1.20  (Port: …:2222)")
             mode = QComboBox()
             mode.addItem("Voll – Befehle ausführen (mit Freigabe)", "voll")
             mode.addItem("Nur lesen – Status, Logs, Dateien ansehen", "lesen")
