@@ -121,6 +121,8 @@ DEFAULT_CONFIG = {
         "drive_index": True,                      # Dateisuche: /mnt täglich im Hintergrund indizieren
         # Handy-Oberfläche (Webserver im Heimnetz)
         "web_enabled": False, "web_port": 8765, "web_https": True,
+        # Andere Rechner per SSH: [{"name", "target": "user@host[:port]", "mode": "voll"|"lesen", "note"}]
+        "ssh_hosts": [],
     },
 }
 
@@ -172,6 +174,13 @@ def _migrate(cfg) -> bool:
             if isinstance(t, list) and "*" not in t and ("run_shell" in t or "edit_file" in t) and "unteragent" not in t:
                 t.append("unteragent")
         done.add("unteragent")
+        changed = True
+    if "ssh" not in done:    # SSH-Werkzeuge für Profile, die Shell-Befehle dürfen
+        for p in cfg["profiles"]:
+            t = p.get("tools")
+            if isinstance(t, list) and "run_shell" in t and "*" not in t:
+                t.extend(x for x in ("remote_shell", "remote_copy") if x not in t)
+        done.add("ssh")
         changed = True
     if changed:
         cfg["settings"]["migrations"] = sorted(done)

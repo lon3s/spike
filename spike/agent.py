@@ -72,6 +72,17 @@ JOB_HOWTO = (
     "Fortschritt live (und die Fertig-Meldung bringt ohnehin nur das Log-Ende)."
 )
 
+SSH_HOWTO = (
+    "Andere Rechner (remote_shell, remote_copy, job_start mit host): Wenn der Nutzer einen dieser Rechner nennt "
+    "(Name, IP oder Beschreibung), arbeitest du DORT per remote_shell – nicht mit run_shell auf diesem PC. "
+    "Jeder Rechner hat seinen eigenen Arbeitsordner (cd bleibt erhalten). Erst schauen (Status, Logs, Konfig), "
+    "dann ändern. Rechner mit „nur lesen“: nur Befehle, die nichts ändern – sonst kommt „Gesperrt“; dann "
+    "beschreibst du dem Nutzer, was zu tun wäre. Lange Läufe (apt upgrade, Builds) mit job_start und host. "
+    "Dateien bearbeiten auf einem Rechner: kleine Änderungen mit sed -i oder einer Here-Doc (cat > datei <<'EOF'); "
+    "größere: remote_copy runter, mit edit_file ändern, remote_copy hoch. Vorher eine Sicherung (cp datei datei.bak). "
+    "Eingerichtete Rechner:"
+)
+
 ANLEITUNGEN_DIR = CONFIG_DIR / "anleitungen"
 
 PROJECT_FILE = "SPIKE.md"
@@ -303,9 +314,14 @@ class Agent(QObject):
     # Was „Immer erlauben“ freischaltet: bei Shell-Befehlen nur dasselbe Programm, sonst das Werkzeug
     def _allow_key(self):
         name, args = self._cur
-        if name in ("run_shell", "job_start"):      # Hintergrundauftrag = Shell-Befehl, gleiche Freigabe
+        if name in ("run_shell", "job_start", "remote_shell"):   # Auftrag = Shell-Befehl, gleiche Freigabe
             words = [w for w in str(args.get("command", "")).split() if w not in ("sudo", "env")]
+            host = str(args.get("host") or "").strip().lower()
+            if host:            # andere Rechner: Freigabe gilt nur für diesen Rechner
+                return f"ssh:{host}:{words[0]}" if words else ""
             return f"run_shell:{words[0]}" if words else ""
+        if name == "remote_copy":
+            return f"ssh:{str(args.get('host') or '').strip().lower()}:copy"
         if name in ("pc", "git"):
             return f"{name}:{args.get('action', '')}"
         return name
@@ -314,6 +330,9 @@ class Agent(QObject):
     def allow_label(key):
         if key.startswith("run_shell:"):
             return f"Befehle mit „{key.split(':', 1)[1]}“"
+        if key.startswith("ssh:"):
+            _, host, prog = key.split(":", 2)
+            return f"Kopieren auf/von {host}" if prog == "copy" else f"Befehle mit „{prog}“ auf {host}"
         if key.startswith("pc:"):
             return {"pc:open": "Öffnen von Dateien/Programmen"}.get(key, key)
         if key.startswith("git:"):
@@ -348,6 +367,7 @@ class Agent(QObject):
         if key and key in self.chat.get("allow", []):
             return True
         short = (f"„{key.split(':', 1)[1]}“" if key.startswith("run_shell:") else
+                 f"{key.split(':')[1]}: „{key.split(':', 2)[2]}“" if key.startswith("ssh:") else
                  {"pc:open": "Öffnen", "git:commit": "Commit", "git:push": "Push", "write_file": "Dateien schreiben", "edit_file": "Dateien ändern",
                   "python_run": "Python"}.get(key, key[:18]))
         self.pending = {"text": text, "key": key, "label": self.allow_label(key) if key else "", "short": short,
@@ -380,6 +400,11 @@ class Agent(QObject):
             system = (system + "\n\n" + GIT_HOWTO).strip()
         if "job_start" in tools:
             system = (system + "\n\n" + JOB_HOWTO).strip()
+        if "remote_shell" in tools:
+            from . import remote
+            liste = remote.describe(s)
+            if liste:
+                system = (system + "\n\n" + SSH_HOWTO + "\n" + liste).strip()
         guide = anleitungen()
         if guide:
             system = (system + "\n\n" + guide).strip()

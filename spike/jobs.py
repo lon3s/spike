@@ -92,20 +92,22 @@ def _watch_pid(job):
     _finish(job, None)
 
 
-def start(command: str, cwd, chat_id="", name="", env=None, prelude="", on_end=None) -> dict:
+def start(command: str, cwd, chat_id="", name="", env=None, prelude="", on_end=None, shown=None) -> dict:
+    """shown: so steht der Befehl in Log, Liste und Meldung (z. B. „[zuhause] apt upgrade“ statt der ssh-Zeile)."""
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     jid = uuid.uuid4().hex[:6]
     log = JOBS_DIR / f"{jid}.log"
-    name = " ".join((name or command).split())[:60]
+    shown = shown or command
+    name = " ".join((name or shown).split())[:60]
     script = f"{prelude}{command}\n"
     with open(log, "w", encoding="utf-8") as fh:
-        fh.write(f"# spike-Auftrag {jid} · {time.strftime('%d.%m.%Y %H:%M:%S')} · Ordner {cwd}\n# {command}\n\n")
+        fh.write(f"# spike-Auftrag {jid} · {time.strftime('%d.%m.%Y %H:%M:%S')} · Ordner {cwd}\n# {shown}\n\n")
         fh.flush()
         p = subprocess.Popen(["bash", "-c", script], cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=fh,
                              stderr=subprocess.STDOUT, start_new_session=True,
                              env={**os.environ, "TERM": "dumb", "PAGER": "cat", "GIT_PAGER": "cat",
                                   "NO_COLOR": "1", **(env or {})})
-    job = {"id": jid, "name": name, "command": command, "cwd": str(cwd), "pid": p.pid, "log": str(log),
+    job = {"id": jid, "name": name, "command": shown, "cwd": str(cwd), "pid": p.pid, "log": str(log),
            "start": time.time(), "end": None, "rc": None, "chat": chat_id or ""}
     with _lock:
         JOBS[jid] = job

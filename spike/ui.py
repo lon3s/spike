@@ -101,6 +101,7 @@ class Bridge(QObject):
     task_done = Signal(str, str, str)              # chat_id, titel, antwort (geplante Aufgabe fertig)
     stt_done = Signal(str, str, str)               # text, info, fehler
     speech_state = Signal(str)
+    ssh_tested = Signal(str)                       # Ergebnis „Verbindung testen“ (Rechner/SSH)
     shell_update = Signal()                       # !-Befehl: neue Ausgabe
     shell_done = Signal()
 
@@ -298,6 +299,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Einstellungen")
         self.resize(960, 620)
         self.cfg = copy.deepcopy(cfg)
+        self._bridge = Bridge()
         tabs = QTabWidget()
         pages = []                  # (Seite, Titel) – am Ende alphabetisch sortiert
 
@@ -461,6 +463,7 @@ class SettingsDialog(QDialog):
         ctrl = getattr(parent, "ctrl", None)
         self.phone = PhoneTab(s, getattr(ctrl, "web", None))
         pages.append((self.phone, "Handy"))
+        pages.append((self._ssh_tab(s), "Rechner (SSH)"))
         for page, title in sorted(pages, key=lambda pt: pt[1].replace("&&", "&").casefold()):
             tabs.addTab(page, title)
         if isinstance(tab, str):
@@ -475,8 +478,60 @@ class SettingsDialog(QDialog):
         lay.addWidget(tabs)
         lay.addWidget(bb)
 
-        self._bridge = Bridge()
         self._bridge.models_loaded.connect(self._test_done)
+
+    def _ssh_tab(self, s):
+        """Andere Rechner, auf denen spike per SSH arbeiten darf."""
+        from . import remote
+        hosts = s.setdefault("ssh_hosts", [])
+        outer = QWidget()
+        ov = QVBoxLayout(outer)
+        intro = QLabel("spike kann auf diesen Rechnern Befehle ausführen und Dateien kopieren (Werkzeuge "
+                       "<b>remote_shell</b>, <b>remote_copy</b>, <b>job_start</b> mit Rechner). Anmeldung nur per "
+                       "SSH-Schlüssel. <b>Nur lesen</b>: Befehle, die nichts ändern, laufen ohne Rückfrage – alles "
+                       "andere ist gesperrt. <b>Voll</b>: wie Shell-Befehle hier (Freigabe je nach Modus).")
+        intro.setWordWrap(True)
+        ov.addWidget(intro)
+
+        def form(w, changed):
+            f, fields = QFormLayout(w), {}
+            _line(f, "name", "Name", changed, fields).setPlaceholderText("z. B. zuhause")
+            _line(f, "target", "Adresse", changed, fields).setPlaceholderText("benutzer@192.168.178.105  (Port: …:2222)")
+            mode = QComboBox()
+            mode.addItem("Voll – Befehle ausführen (mit Freigabe)", "voll")
+            mode.addItem("Nur lesen – Status, Logs, Dateien ansehen", "lesen")
+            mode.currentIndexChanged.connect(changed)
+            f.addRow("Rechte", mode)
+            fields["mode"] = (mode, mode.currentData, lambda v: mode.setCurrentIndex(max(0, mode.findData(v or "voll"))))
+            _line(f, "note", "Notiz fürs Modell", changed, fields).setPlaceholderText(
+                "z. B. Debian, Home Assistant + Frigate in Docker")
+            test = QPushButton("Verbindung testen")
+            res = QLabel()
+            res.setWordWrap(True)
+            res.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            def run_test():
+                it = self.ssh_editor.current()
+                if not it or not it.get("target"):
+                    res.setText("Erst eine Adresse eintragen.")
+                    return
+                res.setText("prüfe …")
+                test.setEnabled(False)
+                target = it["target"]
+
+                def job():
+                    txt = remote.test(target)
+                    self._bridge.ssh_tested.emit(txt)
+                threading.Thread(target=job, daemon=True).start()
+            self._bridge.ssh_tested.connect(lambda t: (res.setText(t), test.setEnabled(True)))
+            test.clicked.connect(run_test)
+            f.addRow(test, res)
+            return fields
+
+        self.ssh_editor = ListEditor(hosts, lambda: {"name": f"rechner{len(hosts) + 1}", "target": "",
+                                                     "mode": "voll", "note": ""}, form)
+        ov.addWidget(self.ssh_editor, 1)
+        return outer
 
     def _speech_tab(self, s):
         w = QWidget()

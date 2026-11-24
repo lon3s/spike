@@ -2,6 +2,7 @@
 import html
 import json
 import re
+import shlex
 import os
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 
-from . import jobs, mcp, memory, plugins
+from . import jobs, mcp, memory, plugins, remote
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
@@ -56,7 +57,22 @@ TOOL_SPECS = {
                      "Rückgabewert und Log-Ende. Danach also NICHT in einer Schleife nachfragen, sondern andere "
                      "Arbeit erledigen oder die Antwort beenden. Startet im aktuellen Arbeitsordner.",
                      {"command": {"type": "string"},
-                      "name": {"type": "string", "description": "kurzer Name, z. B. „Kernel bauen“"}}, ["command"]),
+                      "name": {"type": "string", "description": "kurzer Name, z. B. „Kernel bauen“"},
+                      "host": {"type": "string", "description": "optional: Name eines SSH-Rechners – dann läuft der "
+                               "Auftrag dort (im Ordner aus remote_shell)"}}, ["command"]),
+    "remote_shell": _fn("remote_shell", "Führt einen bash-Befehl auf einem anderen Rechner per SSH aus (Liste der "
+                        "Rechner im System-Prompt). „cd“ bleibt pro Rechner erhalten. sudo geht (ohne Passwort oder "
+                        "spike fragt den Nutzer einmal). Kein interaktives Programm. Länger als ~1 Minute → "
+                        "job_start mit host.",
+                        {"host": {"type": "string", "description": "Name des Rechners"},
+                         "command": {"type": "string"}}, ["host", "command"]),
+    "remote_copy": _fn("remote_copy", "Kopiert Dateien/Ordner zwischen diesem PC und einem SSH-Rechner (scp).",
+                       {"host": {"type": "string"},
+                        "richtung": {"type": "string", "enum": ["hoch", "runter"],
+                                     "description": "hoch = von hier zum Rechner, runter = vom Rechner hierher"},
+                        "von": {"type": "string", "description": "Quellpfad"},
+                        "nach": {"type": "string", "description": "Zielpfad"}},
+                       ["host", "richtung", "von", "nach"]),
     "job_status": _fn("job_status", "Zeigt Hintergrundaufträge: ohne id eine Liste (laufend und zuletzt beendet), "
                       "mit id Zustand und die letzten Zeilen des Logs. grep filtert das Log nach einem Muster "
                       "(z. B. „error|fehler“), lines = Anzahl Zeilen (Standard 40).",
@@ -169,6 +185,7 @@ TOOL_LABELS = {
     "ask_user": "Rückfrage mit Auswahl", "git": "Git: committen & pushen ⚠",
     "job_start": "Hintergrundauftrag starten ⚠", "job_status": "Hintergrundaufträge: Stand & Log",
     "job_stop": "Hintergrundauftrag abbrechen",
+    "remote_shell": "Andere Rechner: Befehle per SSH ⚠", "remote_copy": "Andere Rechner: Dateien kopieren ⚠",
     "unteragent": "Unteragenten starten (parallel)",
 }
 
@@ -645,6 +662,7 @@ class ToolBox:
         self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
         self._proc = None             # laufender Shell-Prozess (für Stopp)
         self.sudo_key = None          # Chat-ID (für Aufträge); sudo-Passwort gilt für die ganze Sitzung
+        self.remote_cwd = {}          # SSH-Rechner → zuletzt benutzter Ordner dort
 
     def _mcp_image(self, b64, mime):
         import base64
@@ -794,8 +812,115 @@ class ToolBox:
         rc, out = self.shell(command, on_output=self.on_output)
         return f"exit={rc} · Ordner: {self.cwd}\n" + clip_tail(out, self.limit)
 
+    # --- Andere Rechner per SSH ---
+    def _run_argv(self, argv, stdin_data="", timeout=None, on_output=None, hide_pw=""):
+        """Startet argv mit Live-Ausgabe (wie shell). Gibt (exit, text, ordner_vom_rechner) zurück."""
+        import signal
+        import threading as _th
+        timeout = timeout or int(self.settings.get("shell_timeout", 300))
+        env = {**os.environ, "LC_ALL": "C.UTF-8"}
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, errors="replace", bufsize=1, start_new_session=True, env=env)
+        self._proc = p
+        out, cwd = [], [None]
+
+        def reader():
+            for line in p.stdout:
+                i = line.find(remote.CWD_MARK)
+                if i >= 0:
+                    cwd[0] = line[i + len(remote.CWD_MARK):].strip()
+                    line = line[:i]
+                    if not line:
+                        continue
+                if hide_pw and len(hide_pw) >= 3:
+                    line = line.replace(hide_pw, "•••")
+                out.append(line)
+                if on_output:
+                    on_output(line)
+        t = _th.Thread(target=reader, daemon=True)
+        t.start()
+        try:
+            p.stdin.write(stdin_data)
+            p.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        timed_out = False
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+        t.join(timeout=2)
+        self._proc = None
+        text = "".join(out).rstrip("\n")
+        if timed_out:
+            text += f"\n[abgebrochen nach {timeout} s]"
+        return p.returncode, text, cwd[0]
+
+    def _host(self, host):
+        h = remote.find(self.settings, host)
+        if h:
+            return h, ""
+        names = ", ".join(x["name"] for x in remote.hosts(self.settings)) or "keine eingerichtet"
+        return None, (f"Fehler: Rechner „{host}“ ist nicht eingerichtet (bekannt: {names}). Der Nutzer kann Rechner "
+                      f"unter ⚙ Einstellungen → Rechner (SSH) hinzufügen.")
+
+    def t_remote_shell(self, host, command, confirm=None):
+        h, err = self._host(host)
+        if err:
+            return err
+        name = h["name"]
+        if h.get("mode") == "lesen":
+            if not remote.is_readonly(command):
+                return (f"Gesperrt: „{name}“ ist nur zum Lesen freigegeben – dieser Befehl könnte etwas ändern. "
+                        f"Beschreibe dem Nutzer, was du tun würdest; er kann den Rechner in den Einstellungen auf "
+                        f"„voll“ stellen.")
+        elif not confirm(f"Auf „{name}“ ({h['target']}) ausführen?\n\n{command}"):
+            return "Vom Nutzer abgelehnt."
+        cwd = self.remote_cwd.get(name, "")
+        argv = remote.remote_argv(h["target"], command, cwd)
+        pw = remote.password(name)
+        rc, out, new_cwd = self._run_argv(argv, pw + "\n", on_output=self.on_output, hide_pw=pw)
+        # sudo braucht ein Passwort → einmal fragen (für diesen Rechner und diese Sitzung) und wiederholen
+        if rc != 0 and not pw and remote.needs_password(out) and remote.ask_password(h, _askpass()):
+            pw = remote.password(name)
+            if self.on_output:
+                self.on_output("\n[sudo-Passwort gemerkt – Befehl wird wiederholt]\n")
+            rc, out, new_cwd = self._run_argv(argv, pw + "\n", on_output=self.on_output, hide_pw=pw)
+        if new_cwd:
+            self.remote_cwd[name] = new_cwd
+        if rc == 255 and not new_cwd:
+            out += ("\n[SSH-Verbindung fehlgeschlagen – Rechner aus, Netz weg oder Schlüssel fehlt "
+                    f"(einmal im Terminal: ssh-copy-id {h['target'].split(':')[0]})]")
+        return f"exit={rc} · Ordner: {name}:{self.remote_cwd.get(name, '~')}\n" + clip_tail(out, self.limit)
+
+    def t_remote_copy(self, host, richtung, von, nach, confirm=None):
+        h, err = self._host(host)
+        if err:
+            return err
+        up = str(richtung).lower().startswith("h")
+        if h.get("mode") == "lesen" and up:
+            return f"Gesperrt: „{h['name']}“ ist nur zum Lesen freigegeben – hochladen geht nicht, runterladen schon."
+        local = Path(von if up else nach).expanduser()
+        local = str(local if local.is_absolute() else Path(self.cwd) / local)
+        rpath = nach if up else von
+        cwd = self.remote_cwd.get(h["name"], "")
+        if cwd and not rpath.startswith(("/", "~")):
+            rpath = f"{cwd}/{rpath}"
+        what = (f"{local} → {h['name']}:{rpath}" if up else f"{h['name']}:{rpath} → {local}")
+        if h.get("mode") != "lesen" and not confirm(f"Kopieren ({'hoch' if up else 'runter'})?\n\n{what}"):
+            return "Vom Nutzer abgelehnt."
+        if not up:
+            Path(local).parent.mkdir(parents=True, exist_ok=True)
+        argv = remote.scp_argv(h["target"], local if up else rpath, rpath if up else local, up)
+        rc, out, _ = self._run_argv(argv, "", on_output=self.on_output)
+        return (f"Kopiert: {what}" if rc == 0 else f"Fehler beim Kopieren (exit {rc}): {what}\n{clip_tail(out, 1500)}")
+
     # --- Hintergrundaufträge (laufen abgekoppelt weiter, Rückmeldung kommt in den Chat) ---
-    def t_job_start(self, command, name="", confirm=None):
+    def t_job_start(self, command, name="", host="", confirm=None):
+        if host:
+            return self._remote_job(host, command, name, confirm)
         if not confirm(f"Hintergrundauftrag starten?\n\n{command}"):
             return "Vom Nutzer abgelehnt."
         askpass = _askpass()
@@ -809,6 +934,34 @@ class ToolBox:
         return (f"Auftrag [{job['id']}] „{job['name']}“ gestartet (PID {job['pid']}, Ordner {cwd}).\n"
                 f"Log: {job['log']}\nDu bekommst automatisch eine Nachricht, wenn er fertig ist – "
                 f"nicht in einer Schleife nachfragen. Zwischenstand bei Bedarf mit job_status(id=\"{job['id']}\").")
+
+    def _remote_job(self, host, command, name, confirm):
+        h, err = self._host(host)
+        if err:
+            return err
+        if h.get("mode") == "lesen" and not remote.is_readonly(command):
+            return f"Gesperrt: „{h['name']}“ ist nur zum Lesen freigegeben."
+        if h.get("mode") != "lesen" and not confirm(f"Hintergrundauftrag auf „{h['name']}“ starten?\n\n{command}"):
+            return "Vom Nutzer abgelehnt."
+        # sudo ohne gemerktes Passwort: vorab prüfen, ob es eins braucht, und dann einmal fragen
+        if "sudo" in command and not remote.password(h["name"]):
+            rc, out, _ = self._run_argv(remote.remote_argv(h["target"], "sudo -n true", mark=False), "\n", timeout=20)
+            if rc != 0 and remote.needs_password(out):
+                remote.ask_password(h, _askpass())
+        pw = remote.password(h["name"])
+        argv = remote.remote_argv(h["target"], command, self.remote_cwd.get(h["name"], ""), persist=False, mark=False)
+        pw_dir = Path(tempfile.mkdtemp(prefix="spike-ssh-", dir=os.environ.get("XDG_RUNTIME_DIR") or None))
+        pw_file = pw_dir / "in"
+        fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(pw + "\n")
+        # Passwort-Datei nur so lange, bis ssh sie gelesen hat
+        local = f"trap 'rm -rf {shlex.quote(str(pw_dir))}' EXIT\n{' '.join(shlex.quote(a) for a in argv)} < {shlex.quote(str(pw_file))}"
+        job = jobs.start(local, Path.home(), chat_id=self.sudo_key or "", name=name or f"{h['name']}: {command[:40]}",
+                         on_end=lambda: shutil.rmtree(pw_dir, ignore_errors=True), shown=f"[{h['name']}] {command}")
+        return (f"Auftrag [{job['id']}] „{job['name']}“ läuft auf {h['name']} (lokale PID {job['pid']}).\n"
+                f"Log: {job['log']}\nDu bekommst automatisch eine Nachricht, wenn er fertig ist – nicht in einer "
+                f"Schleife nachfragen.")
 
     def t_job_status(self, id="", lines=40, grep="", confirm=None):
         if not id:

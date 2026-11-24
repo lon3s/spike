@@ -1318,20 +1318,25 @@ class ChatView(QScrollArea):
                             specs.append((("ask", tc["id"], hash(res), theme),
                                           lambda tc=tc, res=res: ask_chip(tc, res, c)))
                         continue
-                    if tc["function"]["name"] == "run_shell" and not (res or "").startswith("Vom Nutzer abgelehnt"):
+                    if tc["function"]["name"] in ("run_shell", "remote_shell") \
+                            and not (res or "").startswith(("Vom Nutzer abgelehnt", "Gesperrt", "Fehler: Rechner")):
                         try:
-                            cmd = json.loads(tc["function"]["arguments"] or "{}").get("command", "")
+                            a_ = json.loads(tc["function"]["arguments"] or "{}")
+                            cmd, rhost = a_.get("command", ""), a_.get("host", "")
                         except Exception:
-                            cmd = tc["function"]["arguments"]
+                            cmd, rhost = tc["function"]["arguments"], ""
                         out, code, cwd = _parse_shell_result(res)
                         running = (res is None and not pending and tool_live is not None
                                    and tool_live.get("id") == tc["id"])
                         if res is None and not running and pending:
                             specs.append((("tw", tc["id"], theme), lambda tc=tc: tool_chip(tc, None, c, True)))
                             continue
+                        title = f"🖧 {rhost}" if rhost else ""
+                        if rhost and ":" in cwd:
+                            cwd = cwd.split(":", 1)[1]
                         specs.append((("term", tc["id"], res is None, theme),
-                                       lambda tc=tc, cmd=cmd, out=out, code=code, cwd=cwd, res=res:
-                                       self._make_term(("t", tc["id"]), cmd, cwd, "", out, res is None, code)))
+                                       lambda tc=tc, cmd=cmd, out=out, code=code, cwd=cwd, res=res, title=title:
+                                       self._make_term(("t", tc["id"]), cmd, cwd, title, out, res is None, code)))
                         continue
                     if tc["id"] in diffs:
                         try:
