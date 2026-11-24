@@ -798,6 +798,32 @@ def summary_divider(summary, c):
     return lb
 
 
+def job_card_info(m) -> dict:
+    """Daten für die Karte „Hintergrundauftrag fertig“ – aus _jobinfo oder (ältere Chats) aus dem Text."""
+    content = m.get("content") or ""
+    if isinstance(content, list):
+        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    head, _, tail = content.partition("--- Log-Ende ---\n")
+    rows = tail.split("\n")
+    ji = dict(m.get("_jobinfo") or {})
+    if not ji:
+        mm = re.search(r"„(.*?)“ (.*?) nach (.+?)\.\s", head + " ")
+        ji = {"name": mm.group(1) if mm else m.get("_job", ""), "cwd": "", "dur": mm.group(3) if mm else "",
+              "rc": 0 if mm and "exit 0" in mm.group(2) else None if not mm or "unbekannt" in mm.group(2) else 1}
+        for r in rows[:3]:
+            mo = re.match(r"# spike-Auftrag \S+ · .*? · Ordner (.*)$", r)
+            if mo:
+                ji["cwd"] = mo.group(1)
+        ji["cmd"] = next((r[2:] for r in rows[:3] if r.startswith("# ") and not r.startswith("# spike-Auftrag ")), "")
+    # Kopfzeilen des Logs weglassen – stehen schon im Kartenkopf
+    out = [r for r in rows if not r.startswith("# spike-Auftrag ") and r != "# " + ji.get("cmd", "").split("\n")[0]]
+    while out and not out[0].strip():
+        out.pop(0)
+    ji["title"] = f"⚙ {ji.get('name', '')[:40]} · {ji.get('dur', '')}"
+    ji["out"] = "\n".join(out)
+    return ji
+
+
 def summary_note(text):
     lb = QLabel(text)
     lb.setObjectName("Muted")
@@ -1037,6 +1063,13 @@ class ChatView(QScrollArea):
                               lambda sh=sh, i=i: self._make_term(("u", i), sh.get("cmd", ""), sh.get("cwd", ""),
                                                                  "", sh.get("out", ""), sh.get("running"),
                                                                  sh.get("exit"))))
+                prev = r
+                continue
+            if r == "user" and m.get("_job"):        # Fertig-Meldung eines Hintergrundauftrags → Terminal-Karte
+                ji = job_card_info(m)
+                specs.append((("job", i, theme),
+                              lambda ji=ji, i=i: self._make_term(("j", i), ji["cmd"], ji["cwd"], ji["title"],
+                                                                 ji["out"], False, ji["rc"])))
                 prev = r
                 continue
             if r == "user" and m.get("_note"):

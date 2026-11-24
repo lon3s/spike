@@ -121,7 +121,9 @@ class Controller:
                 + f" nach {J._dur(job)}.")
         tail = J.tail(job["id"], lines=25)
         text = kopf + f"\nLog: {job['log']} (mehr mit job_status)\n--- Log-Ende ---\n{tail[-3000:]}"
-        return {"role": "user", "content": text, "_job": job["id"]}
+        return {"role": "user", "content": text, "_job": job["id"],
+                "_jobinfo": {"name": job["name"], "cmd": job["command"], "cwd": job.get("cwd", ""), "rc": rc,
+                             "dur": J._dur(job)}}
 
     def _jobs_tooltip(self):
         from . import jobs as J
