@@ -558,7 +558,8 @@ def refresh_drive_index(max_age_h=24, wait=False) -> str:
 # nie im Chat). Für einen Befehl liegt es kurz in einer 0600-Datei in XDG_RUNTIME_DIR; askpass.sh reicht es
 # einmal pro sudo-Aufruf weiter – ist es falsch, fragt sudo erneut und askpass zeigt wieder das Fenster.
 
-_SUDO_PW: dict[str, str] = {}      # Chat-ID → Passwort (nur RAM, weg beim Beenden von spike)
+_SUDO_PW: dict[str, str] = {}      # "session" → Passwort (nur RAM, gilt bis spike beendet wird)
+_SUDO_KEY = "session"              # einmal eingeben, dann für alle Chats/Aufträge dieser Sitzung
 
 
 def forget_sudo(key=None):
@@ -566,6 +567,32 @@ def forget_sudo(key=None):
         _SUDO_PW.clear()
     else:
         _SUDO_PW.pop(key, None)
+
+
+def _sudo_prepare(askpass: str):
+    """Legt das gemerkte Passwort für einen Befehl/Auftrag bereit.
+    Gibt (env-Zusätze, pw, done) zurück; done() räumt auf und merkt ein neu eingegebenes, richtiges Passwort."""
+    if not askpass:
+        return {}, "", lambda: None
+    pw = _SUDO_PW.get(_SUDO_KEY, "")
+    pw_dir = Path(tempfile.mkdtemp(prefix="spike-sudo-", dir=os.environ.get("XDG_RUNTIME_DIR") or None))
+    pw_file, pw_save = pw_dir / "pw", pw_dir / "neu"
+    if pw:
+        fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(pw + "\n")
+
+    def done():
+        try:
+            new = pw_save.read_text() if pw_save.exists() else ""
+        except OSError:
+            new = ""
+        shutil.rmtree(pw_dir, ignore_errors=True)
+        if new and new != _SUDO_PW.get(_SUDO_KEY) and _sudo_ok(new):      # nur ein richtiges Passwort merken
+            _SUDO_PW[_SUDO_KEY] = new
+    env = {"SUDO_ASKPASS": askpass, "SPIKE_PW_FILE": str(pw_file), "SPIKE_PW_SAVE": str(pw_save),
+           "SPIKE_PW_DIR": str(pw_dir)}
+    return env, pw, done
 
 
 def _sudo_ok(pw: str) -> bool:
@@ -594,6 +621,9 @@ def _askpass() -> str:
             '  : > "$SPIKE_PW_FILE.$PPID"; cat "$SPIKE_PW_FILE"; exit 0\nfi\n'
             f"pw=$({ask}) || exit 1\n"
             'if [ -n "$SPIKE_PW_SAVE" ]; then (umask 077; printf \'%s\' "$pw" > "$SPIKE_PW_SAVE"); fi\n'
+            '# gleich für weitere sudo-Aufrufe im selben Befehl bereitlegen\n'
+            'if [ -n "$SPIKE_PW_FILE" ]; then (umask 077; printf \'%s\\n\' "$pw" > "$SPIKE_PW_FILE"; '
+            ': > "$SPIKE_PW_FILE.$PPID"); fi\n'
             "printf '%s\\n' \"$pw\"\n")
     if not f.exists() or f.read_text() != text:
         f.write_text(text)
@@ -614,7 +644,7 @@ class ToolBox:
         self.vision = False           # versteht das Modell Bilder?
         self._images = []             # Bilder aus Werkzeugen, die als nächste Nachricht ans Modell gehen
         self._proc = None             # laufender Shell-Prozess (für Stopp)
-        self.sudo_key = None          # Chat-ID: sudo-Passwort für diesen Chat merken (nur RAM)
+        self.sudo_key = None          # Chat-ID (für Aufträge); sudo-Passwort gilt für die ganze Sitzung
 
     def _mcp_image(self, b64, mime):
         import base64
@@ -651,19 +681,9 @@ class ToolBox:
         prelude = 'sudo() { command sudo -A "$@"; }\n' if askpass else ""
         script = (f"{prelude}{command}\n__spike_rc=$?\nprintf '{self._CWD_MARK}%s\\n' \"$PWD\"\nexit $__spike_rc")
         cwd = self.cwd if Path(self.cwd).is_dir() else Path.home()
+        sudo_env, pw, sudo_done = _sudo_prepare(askpass)
         env = {**os.environ, "TERM": "dumb", "PAGER": "cat", "GIT_PAGER": "cat", "SYSTEMD_PAGER": "cat",
-               "NO_COLOR": "1", **({"SUDO_ASKPASS": askpass} if askpass else {})}
-        pw_dir = pw_file = pw_save = None
-        key = self.sudo_key if askpass else None
-        pw = _SUDO_PW.get(key, "") if key else ""
-        if key:
-            pw_dir = Path(tempfile.mkdtemp(prefix="spike-sudo-", dir=os.environ.get("XDG_RUNTIME_DIR") or None))
-            pw_file, pw_save = pw_dir / "pw", pw_dir / "neu"
-            if pw:
-                fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w") as fh:
-                    fh.write(pw + "\n")
-            env.update(SPIKE_PW_FILE=str(pw_file), SPIKE_PW_SAVE=str(pw_save))
+               "NO_COLOR": "1", **sudo_env}
 
         def hide(line):         # Passwort taucht nie in Ausgabe/Chat auf
             return line.replace(pw, "•••") if pw and len(pw) >= 3 else line
@@ -696,14 +716,7 @@ class ToolBox:
             p.wait()
         t.join(timeout=2)
         self._proc = None
-        if pw_dir:
-            try:
-                new = pw_save.read_text() if pw_save.exists() else ""
-            except OSError:
-                new = ""
-            shutil.rmtree(pw_dir, ignore_errors=True)
-            if new and new != pw and _sudo_ok(new):      # nur ein richtiges Passwort merken
-                _SUDO_PW[key] = new
+        sudo_done()
         if new_cwd[0] and Path(new_cwd[0]).is_dir():
             self.cwd = Path(new_cwd[0])
         text = "".join(out).rstrip("\n")
@@ -787,9 +800,12 @@ class ToolBox:
             return "Vom Nutzer abgelehnt."
         askpass = _askpass()
         cwd = self.cwd if Path(self.cwd).is_dir() else Path.home()
+        sudo_env, _pw, sudo_done = _sudo_prepare(askpass)
+        # Passwort-Datei löscht auch bash selbst am Ende (falls spike vorher neu startet)
+        prelude = ('sudo() { command sudo -A "$@"; }\ntrap \'rm -f "$SPIKE_PW_FILE"\' EXIT\n'
+                   if askpass else "")
         job = jobs.start(command, cwd, chat_id=self.sudo_key or "", name=name,
-                         env={"SUDO_ASKPASS": askpass} if askpass else None,
-                         prelude='sudo() { command sudo -A "$@"; }\n' if askpass else "")
+                         env=sudo_env or None, prelude=prelude, on_end=sudo_done)
         return (f"Auftrag [{job['id']}] „{job['name']}“ gestartet (PID {job['pid']}, Ordner {cwd}).\n"
                 f"Log: {job['log']}\nDu bekommst automatisch eine Nachricht, wenn er fertig ist – "
                 f"nicht in einer Schleife nachfragen. Zwischenstand bei Bedarf mit job_status(id=\"{job['id']}\").")

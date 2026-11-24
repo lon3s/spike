@@ -21,6 +21,7 @@ JOBS_FILE = JOBS_DIR / "jobs.json"
 _lock = threading.Lock()
 JOBS: dict[str, dict] = {}          # id -> {"id","name","command","cwd","pid","log","start","end","rc","chat"}
 ON_DONE = []                        # fn(job) – wird im Hintergrund-Thread aufgerufen, wenn ein Auftrag endet
+ON_CHANGE = []                      # fn() – Auftrag gestartet oder beendet (für die Anzeige; beliebiger Thread)
 KEEP = 40                           # so viele beendete Aufträge bleiben in der Liste (Logs bleiben länger)
 
 
@@ -51,11 +52,20 @@ def _finish(job, rc):
         job["rc"] = rc
         _trim()
         _save()
+    _changed()
     for fn in list(ON_DONE):
         try:
             fn(job)
         except Exception as e:
             print("Auftrag-Rückmeldung:", e)
+
+
+def _changed():
+    for fn in list(ON_CHANGE):
+        try:
+            fn()
+        except Exception as e:
+            print("Auftrag-Anzeige:", e)
 
 
 def _trim():
@@ -64,8 +74,13 @@ def _trim():
         JOBS.pop(j["id"], None)
 
 
-def _watch_child(job, p: subprocess.Popen):
+def _watch_child(job, p: subprocess.Popen, on_end=None):
     rc = p.wait()
+    if on_end:
+        try:
+            on_end()
+        except Exception as e:
+            print("Auftrag-Aufräumen:", e)
     _finish(job, rc)
 
 
@@ -77,7 +92,7 @@ def _watch_pid(job):
     _finish(job, None)
 
 
-def start(command: str, cwd, chat_id="", name="", env=None, prelude="") -> dict:
+def start(command: str, cwd, chat_id="", name="", env=None, prelude="", on_end=None) -> dict:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     jid = uuid.uuid4().hex[:6]
     log = JOBS_DIR / f"{jid}.log"
@@ -95,8 +110,39 @@ def start(command: str, cwd, chat_id="", name="", env=None, prelude="") -> dict:
     with _lock:
         JOBS[jid] = job
         _save()
-    threading.Thread(target=_watch_child, args=(job, p), daemon=True).start()
+    threading.Thread(target=_watch_child, args=(job, p, on_end), daemon=True).start()
+    _changed()
     return job
+
+
+_PCT = __import__("re").compile(r"(?<![\d.,])(\d{1,3}(?:[.,]\d+)?)\s?%")
+
+
+def progress(job) -> tuple[str, float | None]:
+    """Letzte sinnvolle Log-Zeile und – falls sie eine enthält – die letzte Prozentangabe (für die Anzeige).
+    Liest nur das Ende der Datei (billig, auch bei großen Logs)."""
+    try:
+        with open(job["log"], "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - 4096))
+            raw = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return "", None
+    # Fortschrittsbalken schreiben oft mit \r in dieselbe Zeile – das letzte Stück zählt
+    rows = [r.split("\r")[-1].strip() for r in raw.replace("\r\n", "\n").split("\n")]
+    kopf = "# " + job["command"].split("\n")[0].strip()      # Kopfzeilen des Logs nicht anzeigen
+    rows = [r for r in rows if r and not r.startswith("# spike-Auftrag ") and r != kopf]
+    line = rows[-1] if rows else ""
+    m = _PCT.findall(line)
+    pct = None
+    if m:
+        try:
+            v = float(m[-1].replace(",", "."))
+            pct = v if 0 <= v <= 100 else None
+        except ValueError:
+            pass
+    return line, pct
 
 
 def get(jid: str) -> dict | None:
@@ -184,3 +230,4 @@ def restore():
         _save()
     for j in running():
         threading.Thread(target=_watch_pid, args=(j,), daemon=True).start()
+    _changed()

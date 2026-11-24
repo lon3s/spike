@@ -99,6 +99,8 @@ class Controller:
         self._wb.job_done.connect(self._job_done)
         self._wb.job_answered.connect(self._job_answered)
         _J.ON_DONE.append(lambda job: self._wb.job_done.emit(dict(job)))
+        from .ui import job_bus
+        job_bus().changed.connect(self._jobs_tooltip)
         _J.restore()
         # Popup schon kurz nach dem Start unsichtbar vorbereiten – sonst dauert der erste Klick ~1,5 s
         QTimer.singleShot(2500, self._ensure_popup)
@@ -120,6 +122,13 @@ class Controller:
         tail = J.tail(job["id"], lines=25)
         text = kopf + f"\nLog: {job['log']} (mehr mit job_status)\n--- Log-Ende ---\n{tail[-3000:]}"
         return {"role": "user", "content": text, "_job": job["id"]}
+
+    def _jobs_tooltip(self):
+        from . import jobs as J
+        n = len(J.running())
+        self.tray.setToolTip("spike – Klick: Chat · Rechtsklick: Menü"
+                             + (f"\n⚙ {n} Hintergrundauftrag läuft" if n == 1 else
+                                f"\n⚙ {n} Hintergrundaufträge laufen" if n else ""))
 
     def _job_done(self, job: dict, versuch=0):
         from . import config as C, scheduler as S

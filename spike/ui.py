@@ -1443,6 +1443,236 @@ def _icon_btn(text, tip, slot):
     return b
 
 
+# ---------- Hintergrundaufträge: kleine Anzeige „⚙ 1 · 2:14“ (nur sichtbar, solange etwas läuft) ----------
+
+class _JobBus(QObject):
+    changed = Signal()
+
+
+_JOB_BUS = None
+
+
+def job_bus() -> _JobBus:
+    """Meldet Start/Ende von Aufträgen im GUI-Thread (jobs ruft aus beliebigen Threads)."""
+    global _JOB_BUS
+    if _JOB_BUS is None:
+        from . import jobs as J
+        _JOB_BUS = _JobBus()
+        J.ON_CHANGE.append(_JOB_BUS.changed.emit)
+    return _JOB_BUS
+
+
+def _clock(sec) -> str:
+    sec = int(max(0, sec))
+    return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}" if sec >= 3600 else f"{sec // 60}:{sec % 60:02d}"
+
+
+class JobChip(QToolButton):
+    """Zeigt laufende Hintergrundaufträge: Anzahl, Laufzeit, ggf. Prozent (dünne Linie unten).
+    Klick → Menü mit allen Aufträgen (Log live ansehen, stoppen, zum Chat). Tickt nur, solange etwas läuft."""
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.setObjectName("JobChip")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(self)
+        m.aboutToShow.connect(lambda: (m.clear(), self._fill(m)))
+        self.setMenu(m)
+        self._pct = None
+        self._done_text = ""            # kurz „✓ fertig“ nach dem letzten Auftrag
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self.refresh)
+        job_bus().changed.connect(self._changed)
+        self.hide()
+        self.refresh()
+
+    def _changed(self):
+        from . import jobs as J
+        if not J.running() and self.isVisible() and not self._done_text:
+            last = max((j for j in J.JOBS.values() if j.get("end")), key=lambda j: j["end"], default=None)
+            if last:
+                ok = last.get("rc") == 0
+                self._done_text = ("✓ " if ok else "✗ ") + last["name"][:28]
+                self.setProperty("warn", not ok)
+                QTimer.singleShot(6000, self._clear_done)
+        self.refresh()
+
+    def _clear_done(self):
+        self._done_text = ""
+        self.setProperty("warn", False)
+        self.refresh()
+
+    def refresh(self):
+        from . import jobs as J
+        run = sorted(J.running(), key=lambda j: j["start"])
+        if not run:
+            self._timer.stop()
+            self._pct = None
+            if self._done_text:
+                self.setText(self._done_text)
+                self.setToolTip("Hintergrundauftrag beendet – Ergebnis steht im Chat")
+                self._restyle()
+                self.show()
+            else:
+                self.hide()
+            return
+        if not self._timer.isActive():
+            self._timer.start()
+        self._done_text = ""
+        if not self.window().isVisible():       # Fenster zu → nichts rechnen, nur weiterticken
+            return
+        oldest = run[0]
+        line, pct = J.progress(oldest) if len(run) == 1 else ("", None)
+        self._pct = pct
+        n = f"{len(run)} Aufträge" if len(run) > 1 else (f"{pct:.0f} %" if pct is not None else "1 Auftrag")
+        self.setText(f"⚙ {n} · {_clock(time.time() - oldest['start'])}")
+        tip = "\n".join(f"• {j['name']} – läuft seit {J._dur(j)}" for j in run)
+        if line:
+            tip += f"\n\n{line[:120]}"
+        self.setToolTip(tip + "\n\nKlick: Log ansehen / stoppen")
+        self._restyle()
+        self.show()
+
+    def _restyle(self):
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._pct is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(9, 0, -9, 0)
+        y = self.height() - 3
+        col = QColor(self.win.colors.get("accent", "#7c6cf0")) if hasattr(self.win, "colors") else QColor("#7c6cf0")
+        bg = QColor(col)
+        bg.setAlpha(50)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(r.left(), y, r.width(), 2), 1, 1)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(r.left(), y, r.width() * self._pct / 100, 2), 1, 1)
+        p.end()
+
+    def _fill(self, m):
+        from . import jobs as J
+        run = sorted(J.running(), key=lambda j: j["start"])
+        recent = sorted((j for j in J.JOBS.values() if j.get("end") and time.time() - j["end"] < 3600),
+                        key=lambda j: -j["end"])[:3]
+        for j in run:
+            line, pct = J.progress(j)
+            sub = m.addMenu(f"⚙ {j['name'][:40]}   {(f'{pct:.0f} % · ' if pct is not None else '')}"
+                            f"{_clock(time.time() - j['start'])}")
+            if line:
+                a = sub.addAction(line[:70] + ("…" if len(line) > 70 else ""))
+                a.setEnabled(False)
+                sub.addSeparator()
+            sub.addAction("📄 Log live ansehen", lambda j=j: JobLogDialog.open(j, self.win))
+            if j.get("chat") and getattr(self.win, "ctrl", None):
+                sub.addAction("💬 Zum Chat", lambda c=j["chat"]: self.win.ctrl.show_main(c))
+            sub.addAction("■ Stoppen", lambda j=j: threading.Thread(
+                target=J.stop, args=(j["id"],), daemon=True).start())
+        if recent:
+            if run:
+                m.addSeparator()
+            h = m.addAction("Zuletzt beendet")
+            h.setEnabled(False)
+            for j in recent:
+                ok = j.get("rc") == 0
+                m.addAction(f"{'✓' if ok else '✗'} {j['name'][:40]}   {J._dur(j)}",
+                            lambda j=j: JobLogDialog.open(j, self.win))
+        if not m.actions():
+            a = m.addAction("Keine Hintergrundaufträge")
+            a.setEnabled(False)
+
+
+class JobLogDialog(QDialog):
+    """Log eines Auftrags, aktualisiert sich jede Sekunde, solange er läuft."""
+    _open: dict = {}
+
+    @classmethod
+    def open(cls, job, parent=None):
+        d = cls._open.get(job["id"])
+        if d is None:
+            d = cls(job, parent)
+            cls._open[job["id"]] = d
+        d.show()
+        d.raise_()
+        d.activateWindow()
+
+    def __init__(self, job, parent=None):
+        super().__init__(parent)
+        self.job = job
+        self.setWindowTitle(f"spike – Auftrag „{job['name'][:50]}“")
+        self.resize(760, 460)
+        lay = QVBoxLayout(self)
+        self.head = QLabel()
+        self.head.setObjectName("Muted")
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        f = QFont("monospace")
+        f.setStyleHint(QFont.Monospace)
+        self.text.setFont(f)
+        row = QHBoxLayout()
+        self.btn_stop = QPushButton("■ Stoppen")
+        self.btn_stop.clicked.connect(self._stop)
+        close = QPushButton("Schließen")
+        close.clicked.connect(self.close)
+        row.addWidget(self.head, 1)
+        row.addWidget(self.btn_stop)
+        row.addWidget(close)
+        lay.addWidget(self.text, 1)
+        lay.addLayout(row)
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._load)
+        self._load()
+
+    def _stop(self):
+        from . import jobs as J
+        self.btn_stop.setEnabled(False)
+        threading.Thread(target=J.stop, args=(self.job["id"],), daemon=True).start()
+
+    def _load(self):
+        from . import jobs as J
+        job = J.JOBS.get(self.job["id"], self.job)
+        try:
+            with open(job["log"], "rb") as fh:
+                fh.seek(0, 2)
+                fh.seek(max(0, fh.tell() - 60000))
+                txt = fh.read().decode("utf-8", "replace")
+        except OSError as e:
+            txt = f"(Log nicht lesbar: {e})"
+        txt = "\n".join(r.split("\r")[-1] for r in txt.replace("\r\n", "\n").split("\n"))
+        if txt != self.text.toPlainText():
+            sb = self.text.verticalScrollBar()
+            at_end = sb.value() >= sb.maximum() - 4
+            self.text.setPlainText(txt)
+            if at_end:
+                sb.setValue(sb.maximum())
+        running = not job.get("end")
+        self.btn_stop.setVisible(running)
+        self.head.setText(J.describe(job))
+        if running and not self._timer.isActive():
+            self._timer.start()
+        elif not running:
+            self._timer.stop()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._load()
+
+    def closeEvent(self, e):
+        self._timer.stop()
+        JobLogDialog._open.pop(self.job["id"], None)
+        super().closeEvent(e)
+
+
 _INDEX_TIMER = None
 _SCHED_TIMER = None
 _MCP_STARTED = False
@@ -1718,6 +1948,7 @@ class MainWindow(QMainWindow):
         m_perm2.aboutToShow.connect(lambda m=m_perm2: (m.clear(), self._fill_perm_menu(m)))
         self.meta_perm.setMenu(m_perm2)
         ml_.addWidget(self.meta_perm)
+        self.job_chip = JobChip(self)      # laufende Hintergrundaufträge (Platz: siehe _arrange_composer)
         meta_help = QToolButton()
         meta_help.setObjectName("MetaBtn")
         meta_help.setText("?")
@@ -1897,7 +2128,7 @@ class MainWindow(QMainWindow):
             while lay.count():
                 lay.takeAt(0)
         meta_w = (self.meta_bar, self.meta_ctx, self.meta_speed)
-        for w in meta_w:
+        for w in meta_w + (self.job_chip,):
             self.meta_lay.removeWidget(w)
         self.btn_compact.setVisible(compact)
         for w in (self.btn_think, self.btn_perm, self.status):
@@ -1910,12 +2141,13 @@ class MainWindow(QMainWindow):
                 self.cl_top.addWidget(w, 0, Qt.AlignBottom)
             for i, w in enumerate(meta_w):
                 self.meta_lay.insertWidget(i, w, 0, Qt.AlignVCenter if i == 0 else Qt.Alignment())
+            self.meta_lay.insertWidget(len(meta_w), self.job_chip, 0, Qt.AlignVCenter)
         else:
             self.cl_top.addWidget(self.input, 1)
             for w in (self.btn_think, self.btn_perm):
                 w.setFixedHeight(28)
             ch = self.cl_chips
-            for w in (self.btn_attach, self.btn_think, self.btn_perm):
+            for w in (self.btn_attach, self.btn_think, self.btn_perm, self.job_chip):
                 ch.addWidget(w, 0, Qt.AlignVCenter)
             ch.addSpacing(6)
             ch.addWidget(self.meta_bar, 0, Qt.AlignVCenter)
@@ -3638,6 +3870,7 @@ class MainWindow(QMainWindow):
         self._was_active = False
         self._used_at = time.monotonic()
         super().showEvent(e)
+        QTimer.singleShot(0, self.job_chip.refresh)
         QTimer.singleShot(0, self._place_chat_more)
 
     def hideEvent(self, e):

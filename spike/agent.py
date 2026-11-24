@@ -67,7 +67,9 @@ JOB_HOWTO = (
     "läuft. Sobald er endet, erscheint im Chat automatisch eine Nachricht „Hintergrundauftrag … fertig“ mit "
     "Rückgabewert und Log-Ende – darauf reagierst du dann (Ergebnis prüfen, nächster Schritt). Frage nie in einer "
     "Schleife mit job_status nach; job_status nur, wenn der Nutzer nach dem Stand fragt oder du gezielt im Log "
-    "suchen willst (grep=\"error|fehler\"). Lange Ausgaben immer eingrenzen: grep, lines, tail, head."
+    "suchen willst (grep=\"error|fehler\"). Lange Ausgaben immer eingrenzen: grep, lines, tail, head. "
+    "Den Befehl in job_start selbst NICHT mit | tail oder | head kürzen – das Log zeigt dem Nutzer den "
+    "Fortschritt live (und die Fertig-Meldung bringt ohnehin nur das Log-Ende)."
 )
 
 ANLEITUNGEN_DIR = CONFIG_DIR / "anleitungen"
@@ -195,7 +197,7 @@ class Agent(QObject):
         super().__init__()
         self.chat, self.ep, self.model, self.profile = chat, endpoint, model, profile
         self.settings, self.toolbox, self.n_ctx = settings, toolbox, n_ctx
-        toolbox.sudo_key = chat.get("id")      # sudo-Passwort gilt für diesen Chat
+        toolbox.sudo_key = chat.get("id")      # Chat-ID für Hintergrundaufträge
         self.live = None          # {"content", "reasoning"} während des Streamens
         self.stopped = False
         self._ev = threading.Event()
