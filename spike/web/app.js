@@ -218,7 +218,20 @@ chatEl.addEventListener("change", e => {
   const ok = chatEl.querySelector("[data-askok]");
   if (ok) ok.disabled = !chatEl.querySelector("[data-askcb]:checked");
 });
+// Bild antippen → Vollbild (Antippen/Zurück schließt, Finger-Zoom macht der Browser)
+function showImage(src) {
+  const o = document.createElement("div");
+  o.className = "lightbox";
+  o.innerHTML = `<img src="${esc(src)}" alt="">`;
+  const close = () => { o.remove(); window.removeEventListener("popstate", close); };
+  o.addEventListener("click", () => history.back());
+  window.addEventListener("popstate", close);
+  history.pushState({lightbox: 1}, "");
+  document.body.appendChild(o);
+}
 chatEl.addEventListener("click", e => {
+  const im = e.target.closest(".u img, .note img");
+  if (im) return showImage(im.getAttribute("src"));
   const c = e.target.closest("[data-copy]");
   if (c) return copyText(c.closest(".pre").querySelector("pre").textContent);
   const ans = e.target.closest("[data-ans]");

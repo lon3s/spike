@@ -7,8 +7,8 @@ import re
 import time
 import traceback
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QPropertyAnimation, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QKeySequence, QPainter, QRadialGradient, QShortcut
+from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QKeySequence, QPainter, QRadialGradient, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget, QGraphicsOpacityEffect, QGridLayout,
@@ -127,14 +127,204 @@ def _thumb(path):
     return _THUMBS[key]
 
 
+class ImageViewer(QWidget):
+    """Großansicht für Bilder im Chat: passt sich ins Fenster ein, Mausrad = Zoom, Ziehen = Verschieben,
+    Doppelklick = Einpassen/100 %, ← → = andere Bilder derselben Nachricht, Esc = schließen."""
+    _inst = None
+
+    @classmethod
+    def show_images(cls, paths, index=0, parent=None):
+        if cls._inst is None:
+            cls._inst = cls()
+        v = cls._inst
+        v.paths, v.i = list(paths), index
+        v._load()
+        if not v.isVisible():
+            scr = (parent.screen() if parent is not None else QApplication.primaryScreen()).availableGeometry()
+            img = v.img.size() if not v.img.isNull() else QSize(800, 600)
+            w = min(max(img.width() + 40, 520), int(scr.width() * 0.9))
+            h = min(max(img.height() + 90, 380), int(scr.height() * 0.9))
+            v.resize(w, h)
+            v.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
+        v.show()
+        v.raise_()
+        v.activateWindow()
+
+    def __init__(self):
+        super().__init__(None, Qt.Window)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.paths, self.i = [], 0
+        self.img = QImage()
+        self.zoom, self.fit = 1.0, True
+        self.off = QPointF(0, 0)
+        self._drag = None
+        bar = QHBoxLayout()
+        bar.setContentsMargins(10, 8, 10, 8)
+        self.info = QLabel()
+        self.info.setStyleSheet("color: #c8c8d0; font-size: 9pt;")
+        bar.addWidget(self.info, 1)
+        for text, tip, fn in (("◀", "Vorheriges Bild (←)", lambda: self._step(-1)),
+                              ("▶", "Nächstes Bild (→)", lambda: self._step(1)),
+                              ("⤢", "Einpassen / 100 % (Doppelklick)", self._toggle_fit),
+                              ("⧉", "Bild kopieren", self._copy),
+                              ("↗", "Im Bildbetrachter öffnen", self._external),
+                              ("✕", "Schließen (Esc)", self.close)):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedSize(32, 28)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setStyleSheet("QPushButton { color: #e7e7ec; background: rgba(255,255,255,0.08); border: none;"
+                            "border-radius: 6px; } QPushButton:hover { background: rgba(255,255,255,0.18); }")
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+            if text in ("◀", "▶"):
+                setattr(self, "btn_prev" if text == "◀" else "btn_next", b)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(bar)
+        lay.addStretch(1)
+        self._bar_h = 44
+
+    def _load(self):
+        from PySide6.QtGui import QImageReader
+        p = self.paths[self.i] if self.paths else ""
+        r = QImageReader(p)
+        r.setAutoTransform(True)
+        self.img = r.read()
+        self.fit, self.off = True, QPointF(0, 0)
+        many = len(self.paths) > 1
+        self.btn_prev.setVisible(many)
+        self.btn_next.setVisible(many)
+        self.setWindowTitle(f"spike – {os.path.basename(p)}")
+        self._update_info()
+        self.update()
+
+    def _area(self):
+        return QRectF(0, self._bar_h, self.width(), self.height() - self._bar_h)
+
+    def _fit_zoom(self):
+        if self.img.isNull():
+            return 1.0
+        a = self._area().adjusted(16, 8, -16, -16)
+        return min(1.0, a.width() / self.img.width(), a.height() / self.img.height())
+
+    def _scale(self):
+        return self._fit_zoom() if self.fit else self.zoom
+
+    def _update_info(self):
+        if self.img.isNull():
+            self.info.setText("Bild nicht lesbar")
+            return
+        n = f"{self.i + 1}/{len(self.paths)} · " if len(self.paths) > 1 else ""
+        self.info.setText(f"{n}{os.path.basename(self.paths[self.i])} · {self.img.width()}×{self.img.height()} · "
+                          f"{self._scale() * 100:.0f} %")
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(14, 14, 18))
+        if self.img.isNull():
+            return
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        s = self._scale()
+        a = self._area()
+        w, h = self.img.width() * s, self.img.height() * s
+        x = a.x() + (a.width() - w) / 2 + self.off.x()
+        y = a.y() + (a.height() - h) / 2 + self.off.y()
+        p.setClipRect(a)
+        p.drawImage(QRectF(x, y, w, h), self.img)
+        p.end()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._update_info()
+
+    def wheelEvent(self, e):
+        if self.img.isNull():
+            return
+        old = self._scale()
+        new = max(0.05, min(16.0, old * (1.15 if e.angleDelta().y() > 0 else 1 / 1.15)))
+        # zum Mauszeiger hin zoomen
+        a = self._area()
+        c = QPointF(a.center().x(), a.center().y()) + self.off
+        m = e.position()
+        self.off += (m - c) * (1 - new / old)
+        self.zoom, self.fit = new, False
+        self._update_info()
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag = (e.position(), QPointF(self.off))
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if self._drag:
+            start, off = self._drag
+            self.off = off + (e.position() - start)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+        self.unsetCursor()
+
+    def mouseDoubleClickEvent(self, e):
+        self._toggle_fit()
+
+    def _toggle_fit(self):
+        if self.fit:
+            self.fit, self.zoom = False, 1.0
+        else:
+            self.fit = True
+        self.off = QPointF(0, 0)
+        self._update_info()
+        self.update()
+
+    def _step(self, d):
+        if len(self.paths) > 1:
+            self.i = (self.i + d) % len(self.paths)
+            self._load()
+
+    def _copy(self):
+        if not self.img.isNull():
+            QApplication.clipboard().setImage(self.img)
+            self.info.setText(self.info.text().split("  ✓")[0] + "  ✓ kopiert")
+
+    def _external(self):
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        if self.paths:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.paths[self.i]))
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        if k == Qt.Key_Escape:
+            self.close()
+        elif k in (Qt.Key_Left, Qt.Key_Right):
+            self._step(-1 if k == Qt.Key_Left else 1)
+        elif k in (Qt.Key_Plus, Qt.Key_Minus, Qt.Key_0):
+            if k == Qt.Key_0:
+                self.fit = True
+            else:
+                self.zoom = max(0.05, min(16.0, self._scale() * (1.25 if k == Qt.Key_Plus else 0.8)))
+                self.fit = False
+            self.off = QPointF(0, 0)
+            self._update_info()
+            self.update()
+        else:
+            super().keyPressEvent(e)
+
+
 def attachment_row(atts, c):
-    """Bilder als Vorschau, Dateien als Chips (unter der Nutzer-Nachricht)."""
-    from PySide6.QtGui import QPixmap, QDesktopServices
-    from PySide6.QtCore import QUrl
+    """Bilder als Vorschau, Dateien als Chips (unter der Nutzer-Nachricht). Klick auf ein Bild = Großansicht."""
+    from PySide6.QtGui import QPixmap
     w = QWidget()
     lay = QHBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(6)
+    imgs = [a["path"] for a in atts if a.get("kind") == "image"]
     for a in atts:
         if a.get("kind") == "image":
             pm = _thumb(a["path"])
@@ -143,9 +333,10 @@ def attachment_row(atts, c):
                 lb.setPixmap(pm)
             else:
                 lb.setText("🖼 (Bild fehlt)")
-            lb.setToolTip(f"{a.get('name')} – Doppelklick öffnet")
+            lb.setToolTip(f"{a.get('name')} – Klick: groß ansehen")
             lb.setCursor(Qt.PointingHandCursor)
-            lb.mouseDoubleClickEvent = lambda e, p=a["path"]: QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+            lb.mousePressEvent = lambda e, i=imgs.index(a["path"]), lb=lb: (
+                ImageViewer.show_images(imgs, i, lb.window()) if e.button() == Qt.LeftButton else None)
             lb.setStyleSheet(f"border: 1px solid {c['border']}; border-radius: 8px; padding: 2px;")
             lay.addWidget(lb, 0, Qt.AlignTop)
         else:
@@ -481,6 +672,7 @@ class TermCard(QFrame):
         self.state.setText(
             f'<span style="color:{TERM["muted"]}">● läuft</span>' if running else
             "" if exit_code is None else
+            f'<span style="color:{TERM["muted"]}">gestoppt</span>' if exit_code < 0 else
             f'<span style="color:{TERM["prompt"] if exit_code == 0 else TERM["err"]}">exit {exit_code}</span>')
         text = (text or "").rstrip("\n")
         if text == self._text:
@@ -798,6 +990,24 @@ def summary_divider(summary, c):
     return lb
 
 
+_JOB_HEAD = re.compile(r"(?m)^⚙ Hintergrundauftrag \[")
+
+
+def job_parts(m) -> tuple[list, str]:
+    """Auftrag-Meldungen in einer Nutzer-Nachricht finden (auch zusammengefasste aus der Warteschlange).
+    Gibt (Teile für job_card_info, übriger Nutzertext) zurück."""
+    if m.get("_job"):
+        return [m], ""
+    if m.get("_jobparts"):
+        return m["_jobparts"], m.get("_text", "")
+    content = m.get("content")
+    # ältere, zusammengefasste Meldungen ohne Kennzeichnung: am Text erkennen
+    if isinstance(content, str) and content.startswith("⚙ Hintergrundauftrag [") and "--- Log-Ende ---" in content:
+        starts = [x.start() for x in _JOB_HEAD.finditer(content)] + [len(content)]
+        return [{"content": content[a:b].rstrip("\n"), "_job": "?"} for a, b in zip(starts, starts[1:])], ""
+    return [], ""
+
+
 def job_card_info(m) -> dict:
     """Daten für die Karte „Hintergrundauftrag fertig“ – aus _jobinfo oder (ältere Chats) aus dem Text."""
     content = m.get("content") or ""
@@ -808,8 +1018,10 @@ def job_card_info(m) -> dict:
     ji = dict(m.get("_jobinfo") or {})
     if not ji:
         mm = re.search(r"„(.*?)“ (.*?) nach (.+?)\.\s", head + " ")
+        state = mm.group(2) if mm else ""
+        sig, ex = re.search(r"Signal (\d+)", state), re.search(r"exit (\d+)", state)
         ji = {"name": mm.group(1) if mm else m.get("_job", ""), "cwd": "", "dur": mm.group(3) if mm else "",
-              "rc": 0 if mm and "exit 0" in mm.group(2) else None if not mm or "unbekannt" in mm.group(2) else 1}
+              "rc": -int(sig.group(1)) if sig else int(ex.group(1)) if ex else None}
         for r in rows[:3]:
             mo = re.match(r"# spike-Auftrag \S+ · .*? · Ordner (.*)$", r)
             if mo:
@@ -1065,13 +1277,18 @@ class ChatView(QScrollArea):
                                                                  sh.get("exit"))))
                 prev = r
                 continue
-            if r == "user" and m.get("_job"):        # Fertig-Meldung eines Hintergrundauftrags → Terminal-Karte
-                ji = job_card_info(m)
-                specs.append((("job", i, theme),
-                              lambda ji=ji, i=i: self._make_term(("j", i), ji["cmd"], ji["cwd"], ji["title"],
-                                                                 ji["out"], False, ji["rc"])))
+            parts, rest = job_parts(m) if r == "user" else ([], "")
+            if parts:          # Fertig-Meldung(en) von Hintergrundaufträgen → Terminal-Karten
+                for k, part in enumerate(parts):
+                    ji = job_card_info(part)
+                    specs.append((("job", i, k, theme),
+                                  lambda ji=ji, i=i, k=k: self._make_term(("j", i, k), ji["cmd"], ji["cwd"],
+                                                                          ji["title"], ji["out"], False, ji["rc"])))
                 prev = r
-                continue
+                atts = m.get("_attachments") or []
+                if not rest and not atts:
+                    continue
+                m = {**m, "_text": rest}           # was der Nutzer selbst dazu geschrieben hat → normale Blase
             if r == "user" and m.get("_note"):
                 specs.append((("note", i, theme), lambda t=m.get("_note"): summary_note(t)))
                 continue

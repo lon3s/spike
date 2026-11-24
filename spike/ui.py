@@ -3100,8 +3100,14 @@ class MainWindow(QMainWindow):
         if len(items) == 1:
             return items[0]
         msg = {"role": "user", "content": "\n\n".join(m["content"] for m in items)}
+        jobs_ = [m for m in items if m.get("_job")]
+        if jobs_:       # Auftrag-Meldungen bleiben als Karten erkennbar, der Rest wird normale Blase
+            msg["_jobparts"] = [{k: m[k] for k in ("content", "_job", "_jobinfo") if k in m} for m in jobs_]
+            rest = [m for m in items if not m.get("_job")]
+            msg["_text"] = "\n\n".join(t for m in rest for t in [m.get("_text", m["content"])] if t)
         if any("_attachments" in m for m in items):
-            msg["_text"] = "\n\n".join(m.get("_text", m["content"]) for m in items if m.get("_text", m["content"]))
+            msg["_text"] = "\n\n".join(m.get("_text", m["content"]) for m in items
+                                       if m.get("_text", m["content"]) and not m.get("_job"))
             msg["_attachments"] = [a for m in items for a in m.get("_attachments", [])]
             imgs = [p for m in items for p in m.get("_images", [])]
             if imgs:
